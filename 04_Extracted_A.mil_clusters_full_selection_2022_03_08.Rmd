@@ -1,0 +1,1132 @@
+---
+title: "Untitled"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ape)
+library(ggtree)
+library(treeio)
+library(dplyr)
+library(tidyverse)
+library(ComplexHeatmap)
+library(tibble)
+#library(TreeSummarizedExperiment)
+#library(TreeTools)
+#library(treeman)
+library(ggforce)
+library(ggplot2)
+library(stringr)
+library(tidytree)
+#library(castor)
+library(ggnewscale)
+library(patchwork)
+
+library(flow)
+```
+
+AIMS:
+1. Extract Acropora specific clusters and go 1 step back to its parents to calculate the ratio of Nematostella to Acropora --> Done
+2. Highlight enriched clusters in tree --> Done
+    Check if this is correct --> yes
+3. Subtree with heatmaps of oral vs aboral and expresson over time
+
+Other jobs
+- Annotate extracted genes with Acropora annotations and also oral/aboral data  --> Done
+- Extract gene_ids (tip.labels) of extracted nodes --> Done
+
+# Set paths
+If working from Laptop run:
+```{r}
+path<-"D:/Dropbox/PhD JCU/"
+```
+
+If working from JCU desktop run:
+```{r}
+#path<-"C:/Users/jc447193/Dropbox/PhD JCU/"
+```
+
+
+
+Load tree that was created by iqtreee to use in function
+```{r}
+A_vs_N_Full_selection<- read.tree("05_iq_tree/IQ_tree_results/A.mil_N.vec_full_selection_rmdup.align.gp50_2.fasta.treefile")
+```
+
+
+
+
+#1. Extract Acropora specific clusters
+
+
+Function to get Acropora specific clusters and extract tip_labels (gene_ids) of its parent
+```{r}
+extract_A.mil_specific_clusters<-function(tree,variable_name){
+ 
+phy<-tree
+
+# replace node labels with new numbers and save old node labels
+phy$old_node_label<- phy$node.label
+phy$node.label <- 1:phy$Nnode
+# assign("phy",phy,envir = globalenv())
+
+  ### Extract the subtrees
+   l <- ape::subtrees(phy)
+   assign(paste0(variable_name,"_subtrees"),l,envir = globalenv())
+   
+  check_tips_match <- function(tree, expression) {     
+    # check the tips match the expression
+     matches <- grep(expression, tree$tip.label)        # matches if the expression of interest is present in tree tip.label
+     return(length(tree$tip.label) == length(matches))  # if the number of the tiplabels is equal to the numbers of matches, I know this                                                           is a tree with only acropora
+   }
+ 
+   #Creates empty vectors/dataframes to save results
+   #for extraction of Acropora specific clusters
+   maximal_clades <- c()
+   already_matched <- c() # so I don't consider tree labels that I already mtched
+  
+#   parents_of_A_clades <-c()
+   info_table<-data.frame()
+#   offspring_of_parent<-data.frame()
+   offsprings_of_parents<-data.frame()
+#   offspring_of_parent2<-data.frame()
+#   offsprings_of_parents_enriched<-data.frame()
+#   keep_nodes<- c()
+
+   
+   #Returns table of whole tree
+   tree_table <- as_tibble(phy)
+#   #assign(paste0(variable_name,"_tree_table"), tree_table, envir = globalenv())
+ 
+   
+   ### loop all the subtrees to fint the subtrees that only contain amil tip labels
+ for (subtree in l) {
+   if (subtree$node.label[1] %in% already_matched) {
+     # don't check subtrees that have already matched
+     next
+   }
+   tips_match <- check_tips_match(subtree, expression = 'amil')
+   if (tips_match) {
+     # add internal nodes to already_matched
+    already_matched <- c(already_matched, subtree$node.label)
+     # add root to maximal clades
+     #maximal_clades <- c(maximal_clades, subtree$name) # creates a vector of all Acropora specific nodes, but we need the parents of         these
+     
+     #parent of Acorpora specific node
+     parent_of_A_clade<-parent(phy, subtree$name)
+    
+     #dataframe with Acropora specific clade notes and associated parents
+     table <- data.frame(A_clades_nodes = subtree$name, parent_of_acro_specific= parent_of_A_clade)
+     info_table<-rbind(info_table, table)
+     assign(paste0(variable_name,"_info_table"),info_table,envir = globalenv())
+   }
+ 
+ } 
+ 
+ info_parent<-info_table$parent_of_acro_specific
+assign(paste0(variable_name,"_info_parent"), info_parent, envir = globalenv())
+ 
+ #Get root node
+ root<-rootnode(phy)   # Whay do I need root?
+ 
+ 
+ 
+ 
+ #tabel with offsprings for all parents to calculate ratio between acropora and nematostella
+ 
+ for (parent_node in info_parent){
+   #get offspring of parent node in tree_table and adds column of parent_node and filter for only tip label offspring
+     offspring_of_parent<-tidytree::offspring(tree_table, parent_node, self_include =T) %>%   mutate(parent_of_acro_specific=paste0(parent_node)) %>% dplyr::filter(stringr::str_detect(label, 'XP_|amil'))
+
+     #Values to calculate ratio
+     acropora<-offspring_of_parent %>% dplyr::filter(stringr::str_detect(label, 'amil')) %>% nrow()
+     nematostella<- offspring_of_parent %>% dplyr::filter(stringr::str_detect(label, 'XP_')) %>% nrow()
+     ratio<-nematostella/acropora
+    
+     #adds 3 columns to  offspring_of_parent table --> 1. number of acropora; 2. number of nematostella; 3. Ratio
+     offspring_of_parent2<-offspring_of_parent %>% mutate(n_Acropora=acropora) %>% mutate(n_Nematostella=nematostella) %>%       mutate(ratio_nemato_acro=ratio) # saves counts for both species and ratio
+     offsprings_of_parents<-rbind(offsprings_of_parents,offspring_of_parent2) 
+     
+     offsprings_of_parents_enriched<-offsprings_of_parents %>% #separate(label,c("amil_id","Region", "rest"),remove = F, sep = "_") %>%   
+     dplyr::filter(ratio_nemato_acro< 0.5) # I only want clades that have twice as many Acropora sequences than Nematostella sequences
+     assign(paste0(variable_name,"offsprings_of_parents_enriched"), offsprings_of_parents_enriched, envir = globalenv())
+     
+#     #To be able to collapse unnecessary nodes
+#     nodes_to_keep<-get.path(phy, parent_node,root)
+#    keep_nodes<-c(keep_nodes,nodes_to_keep)
+#   # keep_nodes<-keep_nodes %>% sort() %>% unique()
+}
+
+ all_nodes<-1:phy$Nnode  # Why do I need this?
+
+ enriched_parents<-offsprings_of_parents_enriched$parent_of_acro_specific %>% unique()
+# assign(paste0(variable_name,"_enriched_parents"),enriched_parents,envir = globalenv())
+
+ # Save d 
+ d <- data.frame(node =enriched_parents, coloured="A")
+ assign(paste0(variable_name,"_d"),d,envir = globalenv()) #saves tree with changes node labels for the foll0wing steps
+
+ 
+ p<-ggtree(phy) + 
+   geom_tiplab(size = 1) + 
+   geom_hilight(data=d, aes(node=node,fill=coloured))+
+    scale_fill_manual(values=c("red"))
+   #geom_hilight(node=c(4300,3788), fill="red", alpha=.6) 
+ 
+ggsave(paste0("07_Analysing_results/",variable_name,"_labelled_new.png"),width = 70, height = 180, units = "cm",limitsize = FALSE)
+ 
+ assign(paste0(variable_name,"_use"),phy,envir = globalenv()) #saves tree with changes node labels for the foll0wing steps
+
+
+ print(rootnode(phy))
+}
+```
+
+
+
+Apply extract_A.mil_specific_clusters function to loaded trees
+
+```{r}
+extract_A.mil_specific_clusters(A_vs_N_Full_selection,"A_vs_N_Full_selection")
+```
+## save data 
+```{r}
+# save(A_vs_N_Full_selection,
+#      A_vs_N_Full_selection_d,
+#      A_vs_N_Full_selection_info_table,
+#      A_vs_N_Full_selection_subtrees,
+#      A_vs_N_Full_selection_use,
+#      A_vs_N_Full_selectionoffsprings_of_parents_enriched,
+#       file = "extract_A.mil_specific_clusters.RData")
+# To load the data again
+load("extract_A.mil_specific_clusters.RData")
+```
+
+
+```{r}
+
+jpeg("flow_chart_extract_a.mil.jpg", width = 350, height = 350)
+# 2. Create the plot
+flow_view(extract_A.mil_specific_clusters)
+
+# 3. Close the file
+dev.off()
+```
+
+
+
+
+
+Annotate results in dataframe 
+Load annotations
+```{r}
+annotations <-read_tsv(paste0(path, "Chapter2_Gene expression/A.mil_oral_aboral_rnaseq/Files/Annotations/annotation_table_v3_tmhmm.tsv"))
+```
+
+```{r}
+candidates_receptors <- A_vs_N_Full_selectionoffsprings_of_parents_enriched %>% left_join(annotations, by=c("label"="amil_id"))
+write.csv(candidates_receptors , "07_Analysing_results/candidates_receptors.csv", row.names = T)  
+```
+
+
+
+
+
+
+
+
+#2. Highlight enriched clusters in tree 
+
+Plots tree with hightlights, but the hightlight is only a line of branch not the whole cluster
+```{r}
+p<-ggtree(A_vs_N_Full_selection_use) + 
+  geom_tiplab(size = 0.8) + 
+  geom_hilight(data=A_vs_N_Full_selection_d, aes(node=node,fill=coloured))+
+ scale_fill_manual(values=c("red"))
+ggsave(paste0("06_Phylogenetic_tree_ggtree/A_vs_N_Full_selection_Tree.png"),width = 70, height = 180, units = "cm",limitsize = FALSE)
+```
+
+This code highlighted the clades correctly with a box
+##Without function
+
+```{r}
+
+hightlight<-unique(A_vs_N_Full_selectionoffsprings_of_parents_enriched$parent_of_acro_specific)
+
+#plot tree
+ggtree(A_vs_N_Full_selection_use) + geom_tiplab(size = 0.8) + 
+  geom_hilight(mapping=aes(subset = node %in% hightlight),fill="steelblue") 
+  #geom_hilight(data=d, aes(node=node), fill="steelblue", alpha=.6) #did not work
+ggsave("06_Phylogenetic_tree_ggtree/Tree_enriched_highlighted.png",width = 70, height = 180, units = "cm",limitsize = FALSE)
+```
+
+##With function rectangular layout
+```{r}
+annotate_tree_enriched_clusters<-function(tree_input, variable_name, enriched_cluster_input){
+hightlight<-enriched_cluster_input %>% dplyr::select(parent_of_acro_specific) %>% unique()
+hightlight<-hightlight$parent_of_acro_specific
+#plot tree
+d <- data.frame(node=hightlight)
+
+p<-ggtree(tree_input) + geom_tiplab(size = 0.8) + 
+  geom_hilight(mapping=aes(subset = node %in% hightlight),fill="steelblue")# +
+   #geom_text(aes(label=node)) #adds node labels
+
+#Create labels for clades
+clade_label<-c(1:length(d$node))
+
+for(i in 1:length(d$node)){
+  #Then add each clade label
+ p<-p + geom_cladelabel(node=d$node[i], label=clade_label[i], offset = 5,color = "orange")
+  
+}
+ggsave(paste0("06_Phylogenetic_tree_ggtree/",variable_name,"_highlight.png"),width = 70, height = 180, units = "cm",limitsize = FALSE)
+  
+}
+
+```
+
+
+```{r}
+annotate_tree_enriched_clusters(A_vs_N_Full_selection_use,"A_vs_N", A_vs_N_Full_selectionoffsprings_of_parents_enriched)
+```
+
+##With function circular layout
+Plot tree in circular layout
+
+Add heatmap with species info
+
+
+```{r}
+label<-A_vs_N_Full_selection_use$tip.label
+species_annotation_df<- data.frame(label) %>% mutate(Species = ifelse(str_detect(label,'amil'), "Acropora_millepora", "Nematostella_vectensis")) %>% column_to_rownames(var="label")
+```
+
+```{r}
+annotate_tree_enriched_clusters<-function(tree_input, variable_name, enriched_cluster_input,annotation_df){
+hightlight<-enriched_cluster_input %>% dplyr::select(parent_of_acro_specific) %>% unique()
+hightlight<-hightlight$parent_of_acro_specific
+#plot tree
+d <- data.frame(node=hightlight)
+
+p<-ggtree(tree_input,layout='circular') + 
+  #geom_tiplab(size = 0.8) + #adds tip label in tree
+  geom_hilight(mapping=aes(subset = node %in% hightlight),fill="#BB5B11")# +
+   #geom_text(aes(label=node)) #adds node labels
+
+# Add annotations in heatmap next to tree. !!! tip.labels needs to match rownames!!!
+#Reference:https://yulab-smu.top/treedata-book/chapter7.html
+p1 <- gheatmap(p, annotation_df, offset=0, width=0.4)+
+    #scale_fill_viridis_d(option="D", name="discrete\nvalue")+
+   scale_fill_manual( 
+        values=c("#BB5B11", "#489FB5"), name="Species")+ #orange , light blue
+    theme(
+         legend.title=element_text(size=10), 
+         legend.text=element_text(size=8) 
+     )
+ 
+#Create labels for clades
+#clade_label<-c(1:length(d$node))
+
+#for(i in 1:length(d$node)){
+  #Then add each clade label
+# p<-p + geom_cladelabel(node=d$node[i], label=clade_label[i], offset = 5,color = "orange")
+  
+
+ggsave(paste0("06_Phylogenetic_tree_ggtree/",variable_name,"_circle_highlight.png"),width = 20, height = 20, units = "cm",limitsize = FALSE)
+  
+}
+
+```
+
+
+```{r}
+annotate_tree_enriched_clusters(A_vs_N_Full_selection_use,"A_vs_N", A_vs_N_Full_selectionoffsprings_of_parents_enriched, species_annotation_df)
+```
+
+
+
+
+#3. Subtree with heatmaps of oral vs aboral and expresson over time and larval and ciliary proteome
+
+Requirements:
+
+3.1 Oral/Aboral data
+3.2 Annotations to use as tip_label
+3.3 GPCR-Pen annotations to add to tip label to show how many methods support GPCR predictions
+3.4 Developmental data
+3.5 Proteomics data
+3.6 Combine annotations
+
+##3.1 Oral/Aboral data
+
+```{r}
+load(paste0(path,"Chapter2_Gene expression/A.mil_oral_aboral_rnaseq/03_Differential_gene_expression_analysis/Output/Complete_toptable/A.mil_oralaboral_Toptable_limma_trend_all_contrasts.RData"))
+```
+
+Function to select 3 columns of interest and change column names of limma results
+```{r}
+prepare_oralaboral_limma<-function(oralaboral_limma, new_column_name){
+  new<-oralaboral_limma %>% mutate(amil_id2=paste0(amil_id,".m1")) %>% 
+    dplyr::select(amil_id2,logFC,adj.P.Val) 
+    new<-new %>% filter(adj.P.Val<0.05)
+  names(new)<-c("amil_id",paste0(new_column_name,"_logFC"),paste0(new_column_name,"_adj.P.Val"))
+
+  assign(paste0(new_column_name),new,envir = globalenv())
+}
+```
+
+Prepares limma tables with Oral vs aboral
+```{r}
+prepare_oralaboral_limma(table_oral_vs_aboral, "or_vs_ab")
+prepare_oralaboral_limma(table_oralEL_vs_aboralEL, "orEL_vs_abEL")
+prepare_oralaboral_limma(table_aboralEL_vs_aboral, "abEL_vs_ab")
+prepare_oralaboral_limma(table_oralEL_vs_oral, "orEL_vs_or")
+```
+
+
+
+
+
+
+##3.2 Annotations to use as tip_label
+
+
+Load Acropora annotations
+```{r}
+A.mil_annotations <-read_tsv(paste0(path, "Chapter2_Gene expression/A.mil_oral_aboral_rnaseq/Files/Annotations/annotation_table_v3_tmhmm.tsv"))
+```
+
+
+Load Nematostella annotations and add columns so annotations of both species can be combined
+```{r}
+N.vec_annotations <-read_tsv("01_Input_predicted_proteins/Nematostella vectensis/Annotations/N.vec_annotation_table.tsv") %>%  dplyr::select(nemvec_id, evalue,uniprot_id,Entry ,`Protein names`,`Gene names`, Organism) %>% mutate(or_vs_ab_logFC=NA, 
+or_vs_ab_adj.P.Val=NA,
+orEL_vs_abEL_logFC=NA,    
+orEL_vs_abEL_adj.P.Val=NA,
+abEL_vs_ab_logFC=NA,
+abEL_vs_ab_adj.P.Val=NA,
+orEL_vs_or_logFC=NA,
+orEL_vs_or_adj.P.Val=NA) %>% dplyr::rename(gene_id = nemvec_id)
+```
+
+
+Add oral aboral data to annotation
+```{r}
+A.mil_annotations2<-A.mil_annotations %>%  left_join(or_vs_ab , by="amil_id") %>% 
+                                         left_join(orEL_vs_abEL, by="amil_id") %>% 
+                                         left_join(abEL_vs_ab, by="amil_id") %>% 
+                                         left_join(orEL_vs_or, by="amil_id") %>% 
+  dplyr::select(amil_id, evalue,uniprot_id,Entry ,`Protein names`,`Gene names`, Organism,or_vs_ab_logFC:orEL_vs_or_adj.P.Val) %>% dplyr::rename(gene_id = amil_id)
+  
+```
+
+```{r}
+names(A.mil_annotations2)
+```
+
+```{r}
+names(N.vec_annotations)
+```
+
+##3.3 GPCR-Pen annotations to add to tip label to show how many methods support GPCR predictions
+
+Load annotations from GPCR-Pen predictions to get prediction counts info to annotate tree how many methods agreed that this gene is a GPCR
+```{r}
+A.mil_GPCR_Pen <- read.csv("02_GPCR-Pen/02_Output/A.mil_gpcrpipeline_04.05.2021.csv")
+N.vec_GPCR_Pen <- read.csv("02_GPCR-Pen/02_Output/N.vec_gpcrpipeline_04.05.2021.csv")
+```
+
+```{r}
+#select some rows
+A.mil_GPCR_Pen2<-A.mil_GPCR_Pen %>% dplyr::select(Protein,Prediction.Count:GPCRTm.Predicted.Helices) %>% mutate(Species ="Acropora_millepora") #%>% left_join(labels_A.mil, by=c("Protein"="V1"))
+N.vec_GPCR_Pen2<-N.vec_GPCR_Pen %>% dplyr::select(Protein,Prediction.Count:GPCRTm.Predicted.Helices) %>% mutate(Species ="Nematostella_vectensis") #%>% left_join(labels_N.vec,by=c("Protein"="V1"))
+```
+
+
+Combines annotations to be able to annotate tree with both species information 
+```{r}
+A.mil_N.vec_GPCR_Pen<-rbind(A.mil_GPCR_Pen2,N.vec_GPCR_Pen2) 
+```
+
+
+##3.4 Developmental data
+
+Load heatmap data
+```{r}
+load(paste0(path,"Chapter2_Gene expression/A.mil_developmental_transcriptome_rnaseq/A.mil_Developmental_transcriptome_vst.RData"))
+```
+
+
+
+
+
+
+
+
+
+Quick heatmap
+```{r}
+candidates_receptors_ids<-candidates_receptors %>% filter(str_detect(label, "amil")) %>% pull(gene_id)
+```
+
+
+```{r}
+data_development_subset<- data_development2 %>% dplyr::filter(gene_id %in% candidates_receptors_ids) %>% column_to_rownames(var="gene_id")
+H<-Heatmap(data_development_subset,
+       name = "Normalised log counts",
+        cluster_columns = FALSE
+        #Colours
+        #col = colorRamp2(c(-5, 0, 10), c("blue", "black", "orange")),
+        
+        #Titels
+        ##Columns
+      #  column_title = "Larvae parts",
+       # column_title_side = "bottom",
+       # column_title_gp = gpar(fontsize = 20, fontface = "bold"),
+       # column_names_side = "bottom",
+        ##Rows
+       # row_title = "Reeptors",
+       # row_names_side = "right",
+        #row_names_gp = gpar(fontsize = 10),
+        # show_row_names = FALSE,
+        
+        #Clustering 
+        #You can render your dendrogram object by the dendextend package and make a more customized visualization of the dendrogram. 
+        #clustering_distance_rows = "pearson"
+        #row_hclust_side = "right"
+        #km = 10, #Split heatmap by rows
+       # gap = unit(1, "mm"),
+        #row_hclust_side = "right", 
+       #column_hclust_side = "bottom"
+        
+        #Annotations
+       #top_annotation = heatmap_annotation,
+      # top_annotation_height = unit(1, "cm") 
+        
+        
+        
+       )
+
+png("07_Analysing_results/Heatmap_candidates2.png",width=30,height=20,units="cm",res=1200)
+draw(H)
+dev.off()
+```
+
+
+
+
+Do I need code below?
+```{r}
+# data_development_subset_t<-data_development_subset %>% t() %>%  # transpose data
+#   as_tibble(rownames = NA) %>% rownames_to_column(var="Stage") %>%# convert into tibble 
+#   separate(Stage, c('Timepoint', 'Replicate')) %>% # separate State column into timepoint and replicate so that we can group by timpoint to calculate mean expression
+#   group_by(Timepoint)
+```
+
+```{r}
+# data_development_subset_t<-data_development_subset %>% t() %>%  
+#   rownames_to_column(var="Stage") %>% 
+#   pivot_longer(-Stage,names_to = "Gene",values_to = "vst") %>%  
+#   #filter(str_detect(Stage, "_R")) %>% 
+#   left_join(anno, by=c("Gene"="gene_id")) %>% 
+#   separate(Stage, c("Timepoint","Replicate")) %>% # Separate Stage to have label with just timepoint and not replicate
+#   #prepare label for legend
+#   separate(uniprot_id, c("gene_short","Organism")) %>% mutate(label=paste0(gene_short,"_",Gene))
+```
+
+
+
+##3.5 Proteomics data
+
+Load results from DEqMS with grouped Go terms
+```{r}
+load(paste0(path, "Chapter3_Proteomics/A.millepora_cilia_proteomics_2020/06_Cilia_proteomics_results/01_DEqMS_Output/DEqMS_output_all_membrane_Jan2022_v2.RData"))
+```
+
+
+```{r}
+str(DEP_all_contrasts_membrane_v2)
+```
+
+Function to select  columns of interest and change column names of DEqMS results
+```{r}
+prepare_proteomics<-function(DEP_all_contrasts,new_column_name_CM, new_column_name_LM){
+  
+  # split file into cilia and larvae membrane data
+  cilia <- DEP_all_contrasts  %>% filter(contrast =="CM7_vs_CM3") %>% dplyr::select(Majority.protein.IDs,logFC,sca.adj.pval) %>% filter(sca.adj.pval<0.05)
+  larvae<- DEP_all_contrasts  %>% filter(contrast =="LM7_vs_LM3") %>% dplyr::select(Majority.protein.IDs,logFC,sca.adj.pval) %>% filter(sca.adj.pval<0.05)
+  
+  names(cilia)<-c("amil_id",paste0(new_column_name_CM,"_logFC"),paste0(new_column_name_CM,"_adj.P.Val"))
+  names(larvae)<-c("amil_id",paste0(new_column_name_LM,"_logFC"),paste0(new_column_name_LM,"_adj.P.Val"))
+   
+ assign(paste0(new_column_name_CM),cilia,envir = globalenv())
+ assign(paste0(new_column_name_LM),larvae,envir = globalenv())
+}
+```
+
+```{r}
+prepare_proteomics(DEP_all_contrasts=DEP_all_contrasts_membrane_v2,
+                   new_column_name_CM="CM7_vs_CM3", 
+                   new_column_name_LM="LM7_vs_LM3"
+              )
+```
+
+
+
+##3.6 Combine annotations
+```{r}
+A.mil_anno<-A.mil_annotations2 %>% left_join(A.mil_GPCR_Pen2, by =c("gene_id"="Protein"))
+N.vec_anno<-N.vec_annotations %>% left_join(N.vec_GPCR_Pen2, by =c("gene_id"="Protein"))
+
+all_anno<-rbind(A.mil_anno,N.vec_anno) #%>% left_join(info_label, by=c("gene_id"="Protein"))
+```
+
+Combines annotations to be able to annotate tree with both species information 
+```{r}
+A.mil_N.vec_tree_anno<-rbind(A.mil_GPCR_Pen,N.vec_GPCR_Pen) 
+```
+
+
+#5. Subtree with heatmaps of oral vs aboral and expresson over time
+
+```{r}
+heatmap_annotation_aboral <-all_anno %>% filter(Species=="Acropora_millepora")%>% dplyr::select(gene_id,or_vs_ab_logFC, orEL_vs_abEL_logFC, abEL_vs_ab_logFC,orEL_vs_or_logFC)  %>% drop_na(gene_id) %>% column_to_rownames("gene_id")
+
+heatmap_annotation_aboral_short <-all_anno %>% filter(Species=="Acropora_millepora")%>% dplyr::select(gene_id,or_vs_ab_logFC)  %>% drop_na(gene_id) %>% column_to_rownames("gene_id")
+```
+
+```{r}
+heatmap_annotation_proteomics <-all_anno %>% 
+  left_join(CM7_vs_CM3, by=c("gene_id"="amil_id")) %>% 
+  left_join(LM7_vs_LM3, by=c("gene_id"="amil_id")) %>% 
+ filter(Species=="Acropora_millepora")%>% 
+  dplyr::select(gene_id,CM7_vs_CM3_logFC, LM7_vs_LM3_logFC)  %>% drop_na(gene_id) %>% distinct() %>% column_to_rownames("gene_id")
+```
+
+```{r}
+#save(heatmap_annotation_aboral, heatmap_annotation_proteomics, file = "heatmap_annotations.RData")
+# To load the data again
+load("heatmap_annotations.RData")
+```
+
+
+```{r}
+plot_subtree_heatmap<-function(tree, tree_name, heatmap_annotation_aboral, heatmap_annotation_proteomics,offset1,offset2,offset3, node){
+
+  # selects the subtree based on node number
+sub <- tree_subset(tree, node = node, levels_back = 0)  
+
+  # prepares developmental data by converting column to rowname
+data_development<- data_development2 %>% mutate(label=paste0("amil.",gene_id)) %>% dplyr::select(-gene_id) %>% column_to_rownames("label")  
+  assign(paste0(tree_name,"_develop"),data_development,envir = globalenv())  
+  
+ x<- as_tibble(sub)
+ assign(paste0(tree_name,"_x"),x,envir = globalenv())  
+ 
+ #selects some data to add to tree
+ info<-all_anno %>% dplyr::select(gene_id,uniprot_id,`Protein names`,Prediction.Count)
+ assign(paste0(tree_name,"_info"),info,envir = globalenv())
+ 
+ #combines tree data with annotation info
+  y <- full_join(x , info, by = c("label"="gene_id"))%>% mutate(Label_gene=paste0(label,"_", uniprot_id))
+
+  #
+ a<-as.treedata(y) %>% as_tibble()
+ assign(paste0(tree_name,"_newcheck"),a,envir = globalenv())  
+
+ #define colours for the number of methods that support GPCR predictions
+  traffic_lights = c("4" = "green", "3" = "yellow", "2" = "red", "NA" = "grey")
+
+  # plot tree with tip label annotations and branch anntotations of GPCR prediction support
+  p<-ggtree(sub) %<+% a + # a = annotation information and tree data
+    geom_tippoint(aes(color=factor(Prediction.Count),),size=3, alpha=.5)+ # defines tip points
+    scale_color_manual(values=traffic_lights)+ # defines colour of tip points
+    geom_tiplab(aes(label=paste0(label," ", str_trunc(`Protein names`, 35, "right"))),size = 4,align=TRUE)+ # tip labels#
+    xlim_tree(20)
+  #theme_tree2()
+  
+    geom_tiplab(aes(label=GO_Term),offset = 0.2, size=2.5)
+
+  # add oral/aboral data heatmap to annotated tree
+  p2<-gheatmap(p, heatmap_annotation_aboral, offset=offset1, width=1.5, colnames_angle=90, colnames_offset_y = 0, colnames_position = "top" )+
+  scale_fill_gradient2(low="red", mid="white", high="green",midpoint=0, limits=c(-2,2),name="log2FC oral - aboral")
+
+  # add new scale
+  p3 <- p2 + new_scale_fill()
+
+  # add development data as heatmap
+  p4<-gheatmap(p3, data_development, offset=offset2, width=15, colnames_angle=90, colnames_offset_y = 0) + scale_fill_viridis_c(option="B", name="Developmental gene expression")##,limits=c(0,1000)
+  
+  
+  # add new scale
+  p5 <- p4 + new_scale_fill()
+  
+  # add proteomics data as heatmap
+  p6<-gheatmap(p5, heatmap_annotation_proteomics, offset=offset3, width=1, colnames_angle=90, colnames_offset_y = 0,colnames_position = "top" ) + 
+    scale_fill_gradient2(low="orange", mid="white", high="blue",midpoint=0, limits=c(-8,8),name="log2FC competent - pre-competent")
+  
+
+  #save annotated tree
+ggsave(paste0("07_Analysing_results/",tree_name,"_",node,"test.png"),width = 50, height = 35, units = "cm",limitsize = T)
+
+}
+
+```
+
+
+
+
+```{r}
+plot_subtree_heatmap(A_vs_N_Full_selection_use,"2216",heatmap_annotation_aboral,heatmap_annotation_proteomics = heatmap_annotation_proteomics,15,18,43, 2216)
+```
+
+```{r}
+plot_subtree_heatmap_loop<-function(tree, tree_name, heatmap_annotation_aboral, offset1, offset2, enrich_data){
+
+# extracts the unique parents of acropora specific nodes 
+enriched_nodes<-enrich_data$parent_of_acro_specific %>% unique()
+
+
+ # prepares developmental data by converting column to rowname
+data_development<- data_development %>% mutate(label=paste0("amil.",gene_id)) %>% dplyr::select(-gene_id) %>% column_to_rownames("label")
+  assign(paste0(tree_name,"_develop"),data_development,envir = globalenv())
+
+
+#for loop with indexes so function cycles through each of the ontologies entries
+for(i in 1:28){
+  
+  print(enriched_nodes[i])
+  node= enriched_nodes[[i]]
+
+  # selects the subtree based on node number
+sub <- tree_subset(tree, node = as.numeric(node), levels_back = 0)
+
+ 
+ x<- as_tibble(sub)
+ assign(paste0(tree_name,"_x"),x,envir = globalenv())
+
+ #selects some data to add to tree
+ info<-all_anno %>% dplyr::select(gene_id,uniprot_id,`Protein names`,Prediction.Count)
+ assign(paste0(tree_name,"_info"),info,envir = globalenv())
+
+ #combines tree data with annotation info
+  y <- full_join(x , info, by = c("label"="gene_id"))%>% mutate(Label_gene=paste0(label,"_", uniprot_id))
+
+  #
+ a<-as.treedata(y) %>% as_tibble()
+ assign(paste0(tree_name,"_newcheck"),a,envir = globalenv())
+
+ #define colours for the number of methods that support GPCR predictions
+  traffic_lights = c("4" = "green", "3" = "yellow", "2" = "red", "NA" = "grey")
+
+  # plot tree with tip label annotations and branch anntotations of GPCR prediction support
+  p<-ggtree(sub) %<+% a + # a = annotation information and tree data
+  geom_tippoint(aes(color=factor(Prediction.Count),),size=3, alpha=.5)+ # defines tip points
+  scale_color_manual(values=traffic_lights)+ # defines colour of tip points
+   geom_tiplab(aes(label=paste0(label," ", str_trunc(`Protein names`, 35, "right"))),size = 4,align=TRUE) # tip labels
+
+  # add oral/aboral data heatmap to annotated tree
+  p2<-gheatmap(p, heatmap_annotation_aboral, offset=offset1, width=1.5, colnames_angle=90, colnames_offset_y = 0, colnames_position = "top" )+
+  scale_fill_gradient2(low="red", mid="white", high="green",midpoint=0, limits=c(-2,2),name="log2FC oral - aboral")
+
+  # add new scale
+  p3 <- p2 + new_scale_fill()
+
+  # add development data as heatmap
+  p4<-gheatmap(p3, data_development, offset=offset2, width=15, colnames_angle=90, colnames_offset_y = 0) + scale_fill_viridis_c(option="B", name="Developmental gene expression")##,limits=c(0,1000)
+p
+  #save annotated tree
+ggsave(paste0("07_Analysing_results/",tree_name,"_",enriched_nodes[i],".png"),width = 50, height = 35, units = "cm",limitsize = T)
+
+}
+}
+
+```
+
+
+```{r}
+plot_subtree_heatmap_loop(A_vs_N_Full_selection_use,"A_vs_N_Full_selection_rmdup_",heatmap_annotation_aboral,20,30, A_vs_N_Full_selectionoffsprings_of_parents_enriched)
+```
+
+#Loop2 with proteomics data
+```{r}
+plot_subtree_heatmap_loop2<-function(tree, tree_name, heatmap_annotation_aboral,heatmap_annotation_proteomics,offset1, offset2,offset3, enrich_data){
+
+# extracts the unique parents of acropora specific nodes 
+enriched_nodes<-enrich_data$parent_of_acro_specific %>% unique()
+
+
+ # prepares developmental data by converting column to rowname
+data_development<- data_development2 %>% mutate(label=paste0("amil.",gene_id)) %>% dplyr::select(-gene_id) %>% column_to_rownames("label")
+  assign(paste0(tree_name,"_develop"),data_development,envir = globalenv())
+
+
+#for loop with indexes so function cycles through each of the ontologies entries
+for(i in 1:28){
+  
+  print(enriched_nodes[i])
+  node= enriched_nodes[[i]]
+
+  # selects the subtree based on node number
+sub <- tree_subset(tree, node = as.numeric(node), levels_back = 0)
+
+ 
+ x<- as_tibble(sub)
+ assign(paste0(tree_name,"_x"),x,envir = globalenv())
+
+ #selects some data to add to tree
+ info<-all_anno %>% dplyr::select(gene_id,uniprot_id,`Protein names`,Prediction.Count)
+ assign(paste0(tree_name,"_info"),info,envir = globalenv())
+
+ #combines tree data with annotation info
+  y <- full_join(x , info, by = c("label"="gene_id"))%>% mutate(Label_gene=paste0(label,"_", uniprot_id))
+
+  #
+ a<-as.treedata(y) %>% as_tibble()
+ assign(paste0(tree_name,"_newcheck"),a,envir = globalenv())
+
+ #define colours for the number of methods that support GPCR predictions
+  traffic_lights = c("4" = "green", "3" = "yellow", "2" = "red", "NA" = "grey")
+
+  # plot tree with tip label annotations and branch anntotations of GPCR prediction support
+  p<-ggtree(sub) %<+% a + # a = annotation information and tree data
+  geom_tippoint(aes(color=factor(Prediction.Count),),size=3, alpha=.5)+ # defines tip points
+  scale_color_manual(values=traffic_lights)+ # defines colour of tip points
+   geom_tiplab(aes(label=paste0(label," ", str_trunc(`Protein names`, 35, "right"))),size = 4,align=TRUE)+ # tip labels
+    xlim_tree(20)
+
+  # add oral/aboral data heatmap to annotated tree
+  p2<-gheatmap(p, heatmap_annotation_aboral, offset=offset1, width=1.5, colnames_angle=90, colnames_offset_y = 0, colnames_position = "top" )+
+  scale_fill_gradient2(low="red", mid="white", high="green",midpoint=0, limits=c(-2,2),name="log2FC oral - aboral")
+
+  # add new scale
+  p3 <- p2 + new_scale_fill()
+
+  # add development data as heatmap
+  p4<-gheatmap(p3, data_development, offset=offset2, width=15, colnames_angle=90, colnames_offset_y = 0) + scale_fill_viridis_c(option="B", name="Developmental gene expression")##,limits=c(0,1000)
+
+   # add new scale
+  p5 <- p4 + new_scale_fill()
+  
+  # add proteomics data as heatmap
+  p6<-gheatmap(p5, heatmap_annotation_proteomics, offset=offset3, width=1, colnames_angle=90, colnames_offset_y = 0,colnames_position = "top" ) + 
+    scale_fill_gradient2(low="orange", mid="white", high="blue",midpoint=0, limits=c(-8,8),name="log2FC competent - pre-competent")
+  
+  #save annotated tree
+ggsave(paste0("07_Analysing_results/",tree_name,"_",enriched_nodes[i],".png"),width = 50, height = 35, units = "cm",limitsize = T)
+
+}
+}
+
+```
+
+
+```{r}
+plot_subtree_heatmap_loop2(A_vs_N_Full_selection_use,"A_vs_N_Full_selection_rmdup_",heatmap_annotation_aboral,heatmap_annotation_proteomics,15,18,43, A_vs_N_Full_selectionoffsprings_of_parents_enriched)
+```
+
+
+
+
+#5. Subtree with heatmaps of oral vs aboral and expresson over time
+
+```{r}
+heatmap_annotation_aboral <-all_anno %>% filter(Species=="Acropora_millepora")%>% dplyr::select(gene_id,or_vs_ab_logFC, orEL_vs_abEL_logFC, abEL_vs_ab_logFC,orEL_vs_or_logFC)  %>% drop_na(gene_id) %>% column_to_rownames("gene_id")
+```
+
+```{r}
+heatmap_annotation_proteomics <-all_anno %>% 
+  left_join(CM7_vs_CM3, by=c("gene_id"="amil_id")) %>% 
+  left_join(LM7_vs_LM3, by=c("gene_id"="amil_id")) %>% 
+ filter(Species=="Acropora_millepora")%>% 
+  dplyr::select(gene_id,CM7_vs_CM3_logFC, LM7_vs_LM3_logFC)  %>% drop_na(gene_id) %>% distinct() %>% column_to_rownames("gene_id")
+```
+
+```{r}
+#save(heatmap_annotation_aboral, heatmap_annotation_proteomics, file = "heatmap_annotations.RData")
+# To load the data again
+load("heatmap_annotations.RData")
+```
+
+
+# Subtree for chapter figures
+
+```{r}
+plot_subtree_heatmap<-function(tree, tree_name, heatmap_annotation_aboral,offset1,offset2,offset3, node){
+
+  # selects the subtree based on node number
+sub <- tree_subset(tree, node = node, levels_back = 0)  
+
+
+  # prepares developmental data by converting column to rowname
+data_development<- data_development2 %>% mutate(label=paste0("amil.",gene_id)) %>% dplyr::select(-gene_id) %>% column_to_rownames("label")  
+ # assign(paste0(tree_name,"_develop"),data_development,envir = globalenv())  
+  
+ x<- as_tibble(sub)
+# assign(paste0(tree_name,"_x"),x,envir = globalenv())  
+ 
+ #extract number of branches to define height
+ n<- x %>% filter(str_detect(label,"amil.|XP_")) %>% nrow()
+ # assign(paste0(tree_name,"_n"),n,envir = globalenv())  
+ 
+ #selects some data to add to tree
+ info<-all_anno %>% dplyr::select(gene_id,uniprot_id,`Protein names`,Prediction.Count)
+# assign(paste0(tree_name,"_info"),info,envir = globalenv())
+ 
+ #combines tree data with annotation info
+  y <- full_join(x , info, by = c("label"="gene_id"))%>% mutate(Label_gene=paste0(label,"_", uniprot_id))
+
+  #
+ a<-as.treedata(y) %>% as_tibble()
+# assign(paste0(tree_name,"_newcheck"),a,envir = globalenv())  
+
+ #define colours for the number of methods that support GPCR predictions
+  traffic_lights = c("4" = "green", "3" = "yellow", "2" = "red", "NA" = "grey")
+
+  # plot tree with tip label annotations and branch anntotations of GPCR prediction support
+  p<-ggtree(sub) %<+% a + # a = annotation information and tree data
+    geom_tippoint(aes(color=factor(Prediction.Count),),size=3)+ # defines tip points  #, alpha=.5
+    scale_color_manual(values=traffic_lights)+ # defines colour of tip points
+    geom_tiplab(aes(label=paste0(label," ", str_trunc(`Protein names`, 38, "right"))),size = 3,align=TRUE, offset = 1,)+ # tip labels#
+    xlim_tree(30)
+  #theme_tree2()
+  
+    geom_tiplab(aes(label=GO_Term),offset = 0.2, size=2.5)
+
+  # add oral/aboral data heatmap to annotated tree
+  p2<-gheatmap(p, 
+               heatmap_annotation_aboral, 
+               offset=offset1, 
+               colnames = F,
+               width=1.0, 
+               colnames_angle=45, 
+               colnames_offset_y = 0, 
+               colnames_position = "bottom",
+               font.size = 3) + 
+  scale_fill_gradient2(low="red", mid="white", high="green",midpoint=0, 
+                       limits=c(-4.5,4.5),
+                       breaks=c(-4,-2,0,2,4),
+                       name="Larval part gene expression")
+
+  # add new scale
+  p3 <- p2 + new_scale_fill()
+
+  # add development data as heatmap
+  p4<-gheatmap(p3, data_development, 
+               offset=offset2, 
+               width=15, 
+               colnames_angle=90, 
+               colnames_offset_y = -0.3,
+               colnames_offset_x =0,
+               font.size = 3) + 
+    scale_fill_viridis_c(option="B", name="Normalised gene expression during development")+##,limits=c(0,1000)
+  theme(legend.position="none")+
+      vexpand(0.15,direction = -1)+
+    ggtitle(paste0("Node ", tree_name))+
+     xlab("Timepoint during development of Acropora millepora")# + 
+    # ylab("Normalised gene expression (variance stabilising transformations)")
+  
+  
+  
+  #save annotated tree
+ggsave(paste0("07_Analysing_results/Chapter_figures/",tree_name,"_",node,"_.png"),
+       width = 20, height = n*1.5, # 
+       units = "cm")
+
+assign(paste0("Fig_",tree_name,"s"),p4,envir = globalenv())
+}
+
+```
+
+
+
+
+
+```{r}
+plot_subtree_heatmap(A_vs_N_Full_selection_use,
+                     "2216",
+                     heatmap_annotation_aboral_short,
+                     offset1=25,
+                     offset2=30,
+                     node= 2216)
+```
+
+#3638
+
+```{r}
+plot_subtree_heatmap(A_vs_N_Full_selection_use,
+                     "3638",
+                     heatmap_annotation_aboral_short,
+                     offset1=27,
+                     offset2=30,
+                     node= 3638)
+```
+
+#3620
+
+```{r}
+plot_subtree_heatmap(A_vs_N_Full_selection_use,
+                     "3620",
+                     heatmap_annotation_aboral_short,
+                     offset1=15,
+                     offset2=17,
+                     node= 3620)
+```
+
+#3506
+
+
+```{r}
+plot_subtree_heatmap(A_vs_N_Full_selection_use,
+                     "3506",
+                     heatmap_annotation_aboral_short,
+                     offset1=15,
+                     offset2=17,
+                     node= 3506)
+```
+
+
+#2826
+```{r}
+plot_subtree_heatmap(A_vs_N_Full_selection_use,
+                     "2826",
+                     heatmap_annotation_aboral_short,
+                     offset1=15,
+                     offset2=17,
+                     node= 2826)
+```
+
+#3870
+
+```{r}
+plot_subtree_heatmap(A_vs_N_Full_selection_use,
+                     "3870",
+                     heatmap_annotation_aboral_short,
+                     offset1=18,
+                     offset2=20,
+                     node= 3870)
+```
+
+
+#3123
+
+```{r}
+plot_subtree_heatmap(A_vs_N_Full_selection_use,
+                     "3123",
+                     heatmap_annotation_aboral_short,
+                     offset1=25,
+                     offset2=27,
+                     node= 3123)
+```
+
+#2435
+
+```{r}
+plot_subtree_heatmap(A_vs_N_Full_selection_use,
+                     "2435",
+                     heatmap_annotation_aboral_short,
+                     offset1=18,
+                     offset2=20,
+                     node= 2435)
+```
+
+
+#4018
+```{r}
+plot_subtree_heatmap(A_vs_N_Full_selection_use,
+                     "4018",
+                     heatmap_annotation_aboral_short,
+                     offset1=80,
+                     offset2=90,
+                     node= 4018)
+```
+
+#3311
+
+```{r}
+plot_subtree_heatmap(A_vs_N_Full_selection_use,
+                     "3311",
+                     heatmap_annotation_aboral_short,
+                     offset1=18,
+                     offset2=20,
+                     node= 3311)
+```
+
+
+#2435
+```{r}
+plot_subtree_heatmap(A_vs_N_Full_selection_use,
+                     "2435",
+                     heatmap_annotation_aboral_short,
+                     offset1=18,
+                     offset2=20,
+                     node= 2435)
+```
+
+#2715
+```{r}
+plot_subtree_heatmap(A_vs_N_Full_selection_use,
+                     "2715",
+                     heatmap_annotation_aboral_short,
+                     offset1=18,
+                     offset2=20,
+                     node= 2715)
+```
+
+
+
+# Patchwork
+Combine plots pre-competent and competent with patchwork
+
+
+```{r}
+
+Tree_fig1<- Fig_3870s/ Fig_3506s/Fig_3620s & theme(legend.position = "bottom")
+Tree_fig_anno1<-Tree_fig1 + plot_annotation(
+                                                    #title = 'The surprising truth about mtcars',
+                                                    #subtitle = 'These 3 plots will reveal yet-untold secrets about our beloved data-set',
+                                                    #caption = 'Disclaimer: None of these plots are insightful',
+                                tag_levels = 'A'
+                                )+
+  plot_layout(guides = "collect",
+              #widths = c(2, 1), 
+              heights = c(2, 1,1,1)
+            
+              )
+
+
+
+ggsave(paste0("07_Analysing_results/Chapter_figures/","Combined_figure_tree",".png"), Tree_fig_anno1,
+       width = 20,
+       height = 29,
+       units =  "cm")
+
+```
+
+
+```{r}
+
+Tree_fig2<- Fig_2435s/ Fig_2826s/Fig_2715s/Fig_3123s & theme(legend.position = "none")
+Tree_fig_anno2<-Tree_fig2 + plot_annotation(
+                                                    #title = 'The surprising truth about mtcars',
+                                                    #subtitle = 'These 3 plots will reveal yet-untold secrets about our beloved data-set',
+                                                    #caption = 'Disclaimer: None of these plots are insightful',
+                                tag_levels = 'A'
+                                )+
+  plot_layout(guides = "collect",
+              #widths = c(2, 1), 
+              heights = c(1, 0.6,0.7,2.5)
+            
+              )
+
+
+
+ggsave(paste0("07_Analysing_results/Chapter_figures/","Combined_figure_tree2_2",".png"), Tree_fig_anno2,
+       width = 20,
+       height = 29,
+       units =  "cm",
+       dpi=350)
+
+```

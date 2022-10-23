@@ -1,0 +1,2339 @@
+---
+title: "06_Cilia_proteomics_Boxplots.Rmd"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(stringr)
+library(ggplot2)
+library(dplyr)
+library(recluster)
+library(phytools)
+library(maps)
+library(stats)
+library(cluster)
+library(tidyverse)
+library(dplyr)
+library(readr)
+library(vegan)
+#library(ComplexHeatmap)
+library(ape)
+library(ggtree)
+library(treeio)
+library(tidytree)
+library(ggtree)
+library(ggstance)
+library(ggnewscale)
+library(grid)
+library(gtable)
+library(reshape2)
+library(patchwork)
+library(readxl)
+library(gghighlight)
+library(ggrepel)
+```
+
+Aim:
+
+My plan is to use the TopGO enrichment that were conducted for proteomics sample group and plot them next to each other for comparison
+21_TopGO_boxplot_11_11_2021.Rmd
+For figures see 10_Upset_ORA_2021_04_19.Rmd
+Also check out 11_Upset_boxplot.Rmd
+
+References:
+- Change pannel width https://groups.google.com/g/bioc-ggtree/c/tZ0qkluBeGU/m/nkfWC9ixCwAJ
+# Set paths
+If working from Laptop run:
+```{r}
+path<-"D:/Dropbox/PhD JCU/"
+```
+
+If working from JCU desktop run:
+```{r}
+path<-"C:/Users/jc447193/Dropbox/PhD JCU/"
+```
+
+
+#1. Load results of all TopGo results (run this if it is the first time)
+
+```{r}
+load("03_TopGO_Output/v2/TopGO_output_membrane_v2.RData")
+load("03_TopGO_Output/v2/TopGO_output_soluble_v2.RData")
+```
+
+
+Load results from DEqMS with grouped Go terms
+```{r}
+load("01_DEqMS_Output/DEqMS_output_Jan2022_v2.RData")
+```
+
+# 2. Upset_boxplot preparation
+
+Defines function to prepare TopGO results into boxplot
+- left join GO enrichemnt results with DEqMS results
+```{r}
+preparation_boxplot<-function(set, sample_group, DEqMS_table){
+prep<- set %>% dplyr::select(1:8, Term_number, contrast) %>% mutate(sample_group=paste0(sample_group)) %>%  left_join(DEqMS_table, by="Group_ids")%>% mutate(Regulation = ifelse(logFC>0, "Positive", "Negative")) 
+}
+```
+
+
+```{r}
+CM7_vs_CM3_neg_plot<-preparation_boxplot(Top_weighted_ORA_all_CM7_vs_CM3_neg, sample_group = "Cilia membrane pre-competent larvae", my_DEqMS.results_mergedGO_CM7_vs_CM3_v2)
+
+CM7_vs_CM3_pos_plot<-preparation_boxplot(Top_weighted_ORA_all_CM7_vs_CM3_pos, sample_group = "Cilia membrane competent larvae", my_DEqMS.results_mergedGO_CM7_vs_CM3_v2)
+```
+
+```{r}
+LM7_vs_LM3_neg_plot<-preparation_boxplot(Top_weighted_ORA_all_LM7_vs_LM3_neg, sample_group = "Larvae membrane pre-competent",my_DEqMS.results_mergedGO_LM7_vs_LM3_v2)
+
+LM7_vs_LM3_pos_plot<-preparation_boxplot(Top_weighted_ORA_all_LM7_vs_LM3_pos, sample_group = "Larvae membrane competent",my_DEqMS.results_mergedGO_LM7_vs_LM3_v2)
+```
+
+After meeting, we agreed that the figure should be separate for pre-competent and competent. The next step combined the data of positive and negative, so I will skip it for the separate visualisation of the enriched GO terms
+
+combine results to be able to plot boxplots for negative and positive logFC next to each other saves files for manuall annotation
+```{r}
+Data_figure_CM7_vs_CM3<- rbind(CM7_vs_CM3_neg_plot,
+                               CM7_vs_CM3_pos_plot
+                         )
+write.csv(Data_figure_CM7_vs_CM3,"03_TopGO_Output/v2/Boxplots/Data/Data_figure_CM7_vs_CM3_v2.csv", row.names = FALSE)
+```
+
+```{r}
+Data_figure_LM7_vs_LM3<- rbind(LM7_vs_LM3_neg_plot,
+                               LM7_vs_LM3_pos_plot)
+write.csv(Data_figure_LM7_vs_LM3,"03_TopGO_Output/v2/Boxplots/Data/Data_figure_LM7_vs_LM3_v2.csv", row.names = FALSE)
+```
+
+#read in manually annotated boxplot data
+```{r}
+Data_figure_LM7_vs_LM3<-read_excel("03_TopGO_Output/v2/Boxplots/Data/Manually_annotated/Data_figure_LM7_vs_LM3_v2.xlsx")
+Data_figure_CM7_vs_CM3<-read_excel("03_TopGO_Output/v2/Boxplots/Data/Manually_annotated/Data_figure_CM7_vs_CM3_v2.xlsx")
+```
+
+
+# read in manually annotated volcanoplot data
+```{r}
+all_sig.DEP<-read_excel("01_DEqMS_Output/Sig_0.05_logFC_0.59/v2/Manually_annotated/Sig_DEP_all_0.05_0.59_v2_1.xlsx")
+```
+
+
+```{r}
+Data_figure_CM7_vs_CM3$sample_group<-factor(Data_figure_CM7_vs_CM3$sample_group,levels = c("Cilia membrane pre-competent larvae", "Cilia membrane competent larvae"))
+
+Data_figure_LM7_vs_LM3$sample_group<-factor(Data_figure_LM7_vs_LM3$sample_group,levels = c("Larvae membrane pre-competent", "Larvae membrane competent"))
+```
+
+
+
+
+
+# 2. Create distance matrix and tree in function
+Reference: https://ourcodingclub.github.io/tutorials/data-clustering/
+From file: 12_Upset_boxplot_arranged_by_similarity_2021_05_14.Rmd
+```{r}
+create_distance_matrix<-function(figure_data, saving_path, file_name){
+  # filter for data of specific figure part like both upregulated
+  GOxgene_id<-figure_data  %>% 
+    # select only columns of GO id and gene_id
+    dplyr::select(GO.ID,gene_id) 
+  
+  # Use GO ID and gene ID to create matrix row and colums
+  GO_sub <- unique(GOxgene_id$GO.ID)  # Making a vector with GO ids 
+  gene_sub <- unique(GOxgene_id$gene_id)  # Making a vector with gene_ids
+  
+  # First we'll create an empty matrix with our sites in the rows and our genes in the columns. The       loop function will place a `1` on a given cell when the gene is present in an GO GO.ID and will       fill out the remaining cells with a `0`.
+
+  commat <- matrix(0, length(GO_sub), length(gene_sub))
+    for (i in 1:nrow(commat)){
+    temp <- GOxgene_id[which(GOxgene_id$GO.ID== GO_sub[i]),]
+    commat[i, which(gene_sub%in%temp$gene_id)] <- 1
+    #print(i)
+  }
+
+  # Now let's name our rows and columns with the codes for the sites and the codes for the genes.
+  rownames(commat) <- as.character(GOxgene_id$GO.ID[match(GO_sub, GOxgene_id$GO.ID)])
+  colnames(commat) <- as.character(GOxgene_id$gene_id[match(gene_sub, GOxgene_id$gene_id)])
+
+  # Calculate distances
+  # dist <- recluster.dist(commat, dist="jaccard") #if you have sparse matrix (many zeroes) the best    #  choice is to use Jaccard index                                           
+  #https://www.researchgate.net/post/How-to-choose-the-right-distance-method
+  #dist <- recluster.dist(commat, dist="simpson")
+  #dist <- recluster.dist(commat, dist="sorensen")
+  #dist <- vegdist(commat, method="euclidean")
+  
+  
+  clust <- recluster.cons(commat, tr = 1, p = 0.5, dist = "jaccard", method = "single")
+  clust2  <- clust$cons  # Selecting the consensus tree 
+  
+  #Plot tree
+  plot(clust2, direction = "downwards", cex = 0.5)
+
+  # the write.tree function will let you save your cluster in TRE format so you can open it with          Figtree and visualise it better.
+write.tree(clust2, file=paste0(saving_path,file_name,".tre"))
+writeNexus(clust2, file=paste0(saving_path,file_name,".nex"))
+#write.beast(clust2, file = paste0(saving_path, "/",file_name,".tree")) # I tried to save the tree in 
+#Nexus so I didn't have to open the file in figtree to convert it to nexus, but it was not sucessful
+
+}
+```
+
+
+
+If you want to plot pre-competent and competent together use this create_distance_matrix function on combined data
+
+```{r}
+create_distance_matrix(figure_data=Data_figure_CM7_vs_CM3, saving_path="03_TopGO_Output/v2/Boxplots/Data/", file_name="TopGO_figure_CM7_vs_CM3_v2")
+```
+
+```{r}
+create_distance_matrix(figure_data=Data_figure_LM7_vs_LM3, saving_path="03_TopGO_Output/v2/Boxplots/Data/", file_name="TopGO_figure_LM7_vs_LM3_v2")
+```
+
+
+
+
+If you want to plot Go tree in different plots for pre-competent and competent larvae, than use the following code:
+
+```{r}
+Data_figure_CM7_vs_CM3_pos<- Data_figure_CM7_vs_CM3 %>% filter(Regulation =="Positive")
+Data_figure_CM7_vs_CM3_neg<- Data_figure_CM7_vs_CM3 %>% filter(Regulation =="Negative")
+```
+
+```{r}
+Data_figure_LM7_vs_LM3_pos<- Data_figure_LM7_vs_LM3 %>% filter(Regulation =="Positive")
+Data_figure_LM7_vs_LM3_neg<- Data_figure_LM7_vs_LM3 %>% filter(Regulation =="Negative")
+```
+
+
+
+```{r}
+create_distance_matrix(figure_data=Data_figure_CM7_vs_CM3_pos, saving_path="03_TopGO_Output/v2/Boxplots/Data/", file_name="TopGO_figure_CM7_vs_CM3_v2_pos")
+create_distance_matrix(figure_data=Data_figure_CM7_vs_CM3_neg, saving_path="03_TopGO_Output/v2/Boxplots/Data/", file_name="TopGO_figure_CM7_vs_CM3_v2_neg")
+```
+
+```{r}
+create_distance_matrix(figure_data=Data_figure_LM7_vs_LM3_pos, saving_path="03_TopGO_Output/v2/Boxplots/Data/", file_name="TopGO_figure_LM7_vs_LM3_v2_pos")
+create_distance_matrix(figure_data=Data_figure_LM7_vs_LM3_neg, saving_path="03_TopGO_Output/v2/Boxplots/Data/", file_name="TopGO_figure_LM7_vs_LM3_v2_neg")
+```
+
+
+
+
+
+Load in the trees for plotting the figure
+
+Combined:
+
+```{r}
+tree_CM7_vs_CM3<-read.nexus(file="03_TopGO_Output/v2/Boxplots/Data/TopGO_figure_CM7_vs_CM3_v2.nex", tree.names = NULL)
+tree_LM7_vs_LM3<-read.nexus(file="03_TopGO_Output/v2/Boxplots/Data/TopGO_figure_LM7_vs_LM3_v2.nex", tree.names = NULL)
+```
+
+
+Separate:
+
+```{r}
+tree_CM7_vs_CM3_pos<-read.nexus(file="03_TopGO_Output/v2/Boxplots/Data/TopGO_figure_CM7_vs_CM3_v2_pos.nex", tree.names = NULL)
+tree_CM7_vs_CM3_neg<-read.nexus(file="03_TopGO_Output/v2/Boxplots/Data/TopGO_figure_CM7_vs_CM3_v2_neg.nex", tree.names = NULL)
+
+tree_LM7_vs_LM3_pos<-read.nexus(file="03_TopGO_Output/v2/Boxplots/Data/TopGO_figure_LM7_vs_LM3_v2_pos.nex", tree.names = NULL)
+tree_LM7_vs_LM3_neg<-read.nexus(file="03_TopGO_Output/v2/Boxplots/Data/TopGO_figure_LM7_vs_LM3_v2_neg.nex", tree.names = NULL)
+```
+
+
+#3 Manual creation of boxplot (optional) --> Useful to be able to write/understand function called create_similarity_arranged_boxplot
+##Plot tree without annotations
+```{r}
+p_tree_fig1<-ggtree(tree_oral_aboral)+ layout_rectangular()  #+ ggplot2::xlim(0, 60) #xlim influences spache for brach lengths
+#including xlim caused serious trouble
+p_tree_fig1
+```
+
+
+
+# 4. Function Upsetplot arranged by similarity
+
+
+```{r}
+top_table_LM_neg<-all_sig.DEP %>% filter(contrast=="LM7_vs_LM3") %>% filter(logFC < -0.59  & sca.adj.pval < 0.05)
+```
+
+```{r}
+top_table_LM_pos<-all_sig.DEP %>% filter(contrast=="LM7_vs_LM3") %>% filter(logFC > 0.59  & sca.adj.pval < 0.05)
+```
+
+```{r}
+top_table_CM_neg<-all_sig.DEP %>% filter(contrast=="CM7_vs_CM3") %>% filter(logFC < -0.59  & sca.adj.pval < 0.05)
+```
+
+```{r}
+top_table_CM_pos<-all_sig.DEP %>% filter(contrast=="CM7_vs_CM3") %>% filter(logFC > 0.59  & sca.adj.pval < 0.05)
+```
+
+# Define colour paletts
+Cilia and larvae samples have different manual annotations
+To colour the different terms in different colours, I specified the terms and colours 
+
+Check which terms are present
+```{r}
+Data_figure_LM7_vs_LM3$Manual_annotation %>% unique()
+
+```
+
+```{r}
+# col_pal_LM <-c(
+#   
+#   "Metabolism"= "darkred", 
+#   "Stress" = "red", #A33814 OR #913212 #red
+#   "Extracellular matrix"= "orange",
+#   "Immune response"="yellow",
+#   "Vesicle transport"       = "lightblue",
+#    "Transmembrane transport" = "blue",       
+#   "Signalling" = "navy"           
+#                    
+#   
+#  
+# 
+# )
+
+#489FB5 #light blue
+#0B3F5B #dark blue
+#6D224A OR #5D1D3F #purple
+#913212 #red
+#D77316 OR #BA7611 OR #BB5B11 #orange
+#F5AF00 #yellow
+#3FB42D #light green
+#107F22 #green
+
+```
+
+```{r}
+col_pal_LM <-c(
+    "Vesicle transport"       = "#489FB5",  #light blue
+   "Transmembrane transport" = "#0B3F5B",       #dark blue  
+  "Metabolism"= "#6D224A",   #purple
+  "Stress" = "#A33814",      #red
+  "Extracellular matrix"= "#D77316",   #orange
+  "Immune response"="#F5AF00",  #yellow
+  "Signalling" = "#3FB42D"      #light green   
+
+   
+                   
+  
+ 
+
+)
+
+
+
+
+
+
+
+
+#107F22 #green
+
+```
+
+```{r}
+Data_figure_CM7_vs_CM3$Manual_annotation %>% unique()
+
+```
+```{r}
+col_pal_CM<-c(
+ "Vesicle transport" = "lightblue",
+ "Cilia component" = "gray",
+ "Stress" = "red",
+ "Signalling" ="navy" 
+              )
+```
+
+```{r}
+col_pal_CM<-c(
+ "Vesicle transport"       = "#489FB5",  #light blue
+ "Cilia component" = "gray",
+  "Stress" = "#A33814",      #red
+  "Signalling" = "#3FB42D"       #light green  
+              )
+```
+
+
+
+```{r}
+create_similarity_arranged_boxplot_fig1<-function(enrich_GO_data, nexus_tree, saving_path, file_name,top_table_pos, top_table_neg,label_positive, label_negative, col_pal){
+  
+  # Colour for manuall annotations
+  col_pal <- col_pal
+  
+  # Select data to label most differentially expressed proteins
+    label_pos <- top_table_pos %>%arrange(desc(logFC)) %>% head(10) 
+    assign("label_pos",label_pos,envir = .GlobalEnv)
+    label_neg <- top_table_neg %>% arrange(logFC) %>% head(10)
+   assign("label_neg",label_neg,envir = .GlobalEnv)
+  
+  # Prepare volcanoplot
+  
+  # Select the most important columns for volcanoplot
+  input_volcano_pos<-top_table_pos  %>% dplyr::select(Group_ids,uniprot_id, logFC,sca.adj.pval, ipr_GO_merged,Manual_annotation,contrast,Regulation,Manual_annotation) 
+  input_volcano_neg<-top_table_neg  %>% dplyr::select(Group_ids,uniprot_id, logFC,sca.adj.pval, ipr_GO_merged,Manual_annotation,contrast,Regulation,Manual_annotation) 
+ 
+  # Combines both tables to include in one volcanoplot
+  input_volcano<-rbind(input_volcano_pos,input_volcano_neg)
+  # assign(paste0("Input_test"), input_volcano,envir = .GlobalEnv)
+  
+  # Create names that are used in legend description
+   positive_name<-paste(label_positive, ">", label_negative, sep = " ")
+   negative_name<- paste(label_positive, "<", label_negative, sep = " ")
+  
+  # Volcano plot
+  volcano_plot<-ggplot(input_volcano,aes(x=logFC, y=-log10(sca.adj.pval),colour=Manual_annotation)) +
+  geom_point(alpha=0.7, fill="black") +
+   scale_colour_manual(values=col_pal, limits = names(col_pal),name="",na.value="grey")+
+
+  # Add title to plot
+  #  ggtitle(paste(contrast)) +
+
+  # Axis labels
+    xlab("log2 fold change") +
+    ylab("-log10 adjusted p-value") +
+    
+     #Highlight the most differential genes with uniprot id   
+  geom_text_repel(data=label_pos,aes(label=uniprot_id),colour="black")+
+  geom_text_repel(data=label_neg,aes(label=uniprot_id),colour="black")+
+
+  # Themes to influence legend and labels
+    theme(legend.position='right',plot.title = element_text(size = rel(1.5), hjust = 0.5),axis.title = element_text(size = rel(1.25)))+
+    theme_bw()
+  
+  
+  
+  #Prepare data for tree annotations
+  # Filtr for different figure parts if required
+  data<-enrich_GO_data %>% #filter(figure_part==paste0(figu_part)) %>% 
+    # Create column for label that matches tree label
+    mutate(label=GO.ID) %>% 
+    # Create column that represents if logFC is positive or negative so data can be devided into left and right parts
+    mutate(Regulation = ifelse(logFC>0, "Positive", "Negative"))
+
+  #Checkpoint
+  assign("data_test", data, envir = .GlobalEnv)
+  
+  #info = annotation for tree
+  info<- data %>% dplyr::select(label,Ontology,Term,GO.ID,weightFisher, Significant, Manual_annotation) %>% mutate(GO_Term=paste(GO.ID, Term, sep=" "))
+  #Checkpoint
+  assign("info_test", info, envir = .GlobalEnv)
+
+  #Plot tree without annotations
+  tree<-ggtree(nexus_tree)+ layout_rectangular()#+ggplot2::xlim(c(0,-6,-6),c(200,6,6)) #xlim determines achis of all 3 pannels
+  #Checkpoint
+  assign("tree_test", tree, envir = .GlobalEnv)
+
+  #Add annotations to tree
+  tree_anno <- tree %<+% info+
+    geom_tippoint(aes(shape=Ontology),colour = "grey30")+
+    geom_tiplab(aes(label=GO_Term),offset = 0.2, size=3.0)+ xlim_tree(10) +# size changes font size while xlim changes x axis limits
+     scale_shape_discrete(name = "Gene ontology domains", labels = c("BP"="Biological Process", "CC"="Cellular Component", "MF"="Molecular Function"))
+  #Checkpoint
+  assign("tree_anno_test",  tree_anno, envir = .GlobalEnv)
+
+  #Prepare data to align to annotated tree
+  data_neg<- data %>% filter(Regulation=="Negative") %>%
+    dplyr::select(label,logFC,weightFisher, Significant,Manual_annotation) %>%
+    mutate(Neg_logFC=logFC) %>% 
+    mutate(Count_neg=Significant) %>% 
+    mutate(Manual_annotation_neg =Manual_annotation)%>% 
+    dplyr::select(-Manual_annotation)
+   #Checkpoint
+  assign("data_neg_test",  data_neg, envir = .GlobalEnv)
+
+  data_pos<- data %>% filter(Regulation=="Positive") %>%
+    dplyr::select(label,logFC,weightFisher,Significant,Manual_annotation) %>%
+    mutate(Pos_logFC=logFC)%>% 
+    mutate(Count_pos=Significant) %>% 
+    mutate(Manual_annotation_pos =Manual_annotation)%>% 
+    dplyr::select(-Manual_annotation)
+
+  data_combined<-full_join(data_neg,data_pos) %>% mutate(weightFisher_num=as.numeric(as.character(weightFisher))) 
+  #Checkpoint
+  assign("data_combined_Fig1",  data_combined, envir = .GlobalEnv)
+
+
+  # Matrix for heatmap that annotate boxplots manually
+  #Manually_annotated_GO<-enrich_GO_data %>% dplyr::select(GO.ID, Manual_annotation) %>% distinct( .keep_all = T)  %>%column_to_rownames("GO.ID")
+ #  assign("Manually_annotated_GO",  Manually_annotated_GO, envir = .GlobalEnv)
+  
+   
+   #Function to create achsis different for oral and aboral
+  #https://coolbutuseless.github.io/2019/03/07/custom-axis-breaks-on-facetted-ggplot/
+  breaks_fun <- function(x) {
+  if (max(x) > 0) {
+      seq(0, 8, 1)
+    } else {
+      seq(-8 , 0, 1)
+     }
+  }
+
+  #Function to create limits different for oral and aboral
+  limit_fun <- function(x) {
+  if (max(x) > 0) {
+      c(0, 8)
+    } else {
+       c((-8), 0)
+     }
+  }
+
+  #Convert weightFisher to numeric
+  #data_combined$weightFisher<-as.numeric(as.character(data_combined$weightFisher))
+
+  #Define colours for fill gradient
+ # my_colours=c("#BEE0CC","#70C3D0","#419DC5","#316BA7","#223B89","#151E5E")
+ # my_colours=c("#151E5E","#223B89","#316BA7","#419DC5","#70C3D0","#BEE0CC")
+#my_colours=c("#BEE0CC","#70C3D0","#419DC5","#316BA7","#223B89","#151E5E")#blue
+my_colours=c("#808080","#9A9A9A","#B5B5B5","#D0D0D0","#EDEDED","#FFFFFF")#greys
+#my_colours2=c("green","#BEE0CC")
+
+  #Align data to annotated tree
+  # Manual annotation added
+tree_data_m<-  facet_plot(tree_anno ,panel = "neg", geom = geom_tile,
+  aes(x = 0, fill=Manual_annotation_neg),data = data_combined) +# Colour of box background
+    scale_fill_manual(values=col_pal, name="Manual annotations",na.value="white")
+
+  # Adds number onto manual annotation
+ tree_data_mn<- facet_plot(tree_data_m,panel = "neg", data = data_combined, geom = geom_text,
+             aes(x = 0, label = Count_neg))
+ 
+ # Adds new scale
+ tree_data_mns <- tree_data_mn + new_scale_fill()
+ 
+ #Adds boxplot left
+ tree_data_mnsb<- tree_data_mns +   geom_facet(panel = "Not competent", data = data_combined, geom =ggstance::geom_boxploth , #alternative geom_violinh
+              aes(x = Neg_logFC, group = label,fill=weightFisher_num), width = .6) +
+              geom_facet(panel = "Competent", data = data_combined, geom = ggstance::geom_boxploth,
+              aes(x = Pos_logFC, group = label,fill=weightFisher_num), width = .6)+
+              theme_tree2()+
+            # scale_x_continuous(breaks = breaks_fun,limits = limit_fun)
+             scale_fill_gradientn(colours=my_colours,name="weightFisher")
+
+ tree_data_mnsbs <- tree_data_mnsb + new_scale_fill()
+ 
+ tree_data_mnsbsm<-  facet_plot(tree_data_mnsbs ,panel = "pos", geom = geom_tile,
+    aes(x = 0,fill=Manual_annotation_pos),data = data_combined,show.legend = FALSE) +# show.legend = FALSE removes legend since it is the same than the other
+     scale_fill_manual(values=col_pal,name="Manual annotations competent",na.value="white")
+
+ 
+tree_data_mnsbsmn<- facet_plot(tree_data_mnsbsm,panel = "pos", data = data_combined, geom = geom_text,
+             aes(x = 0, label = Count_pos))
+tree_data_mnsbsmn<-facet_labeller(tree_data_mnsbsmn, c(Tree = "Enriched Gene ontology terms"))
+# #tree_data_anno<-gheatmap(tree_data_new_scale, Manually_annotated_GO, offset=8, width=0.5, font.size=3,
+# #        colnames_angle=-45, hjust=0) +
+# #
+# #tree_data_mnsbsmn
+# 
+# 
+gt = ggplot_gtable(ggplot_build(tree_data_mnsbsmn))
+ assign("gt_check",  gt , envir = .GlobalEnv)
+
+gt$widths[7] = 0.1*gt$widths[7] # in this case it was colmun 7 - reduce the width by a half
+gt$widths[13] = 0.1*gt$widths[13] # in this case it was colmun 7 - reduce the width by a half
+gt$widths[9] = 0.3*gt$widths[9] # in this case it was colmun 7 - reduce the width by a half
+gt$widths[11] = 0.3*gt$widths[11] # in this case it was colmun 7 - reduce the width by a half
+# 
+# #png(file=paste0(saving_path,file_name,".png"),width = 20, height = 29, units = "cm", res = 300)
+# #grid.newpage()
+# #grid.draw(gt)
+# #assign("gt",  gt, envir = .GlobalEnv)
+# #ggsave(paste0(saving_path,file_name,".png"),width = 20, height = 28, units = "cm")
+# 
+# 
+# 
+together<-volcano_plot/gt+
+  plot_layout(ncol=1,nrow = 2,
+              heights=c(1,2))+
+  plot_annotation(tag_levels = 'A')
+
+
+
+ggsave(paste0(saving_path,file_name,".png"), together,
+       width = 20,
+       height = 28,
+       units =  "cm")
+dev.off()
+}
+```
+
+#Function Fig2
+No volcanoplot 
+```{r}
+create_similarity_arranged_boxplot_fig2<-function(enrich_GO_data, nexus_tree, saving_path, file_name, col_pal){
+  
+  # Colour for manuall annotations
+  col_pal <- col_pal
+  
+  
+  #Prepare data for tree annotations
+  # Filtr for different figure parts if required
+  data<-enrich_GO_data %>% #filter(figure_part==paste0(figu_part)) %>% 
+    # Create column for label that matches tree label
+    mutate(label=GO.ID) %>% 
+    # Create column that represents if logFC is positive or negative so data can be devided into left and right parts
+    mutate(Regulation = ifelse(logFC>0, "Positive", "Negative"))
+
+  #Checkpoint
+  assign("data_test", data, envir = .GlobalEnv)
+  
+  #info = annotation for tree
+  info<- data %>% dplyr::select(label,Ontology,Term,GO.ID,weightFisher, Significant, Manual_annotation) %>% mutate(GO_Term=paste(GO.ID, Term, sep=" "))
+  #Checkpoint
+  assign("info_test", info, envir = .GlobalEnv)
+
+  #Plot tree without annotations
+  tree<-ggtree(nexus_tree)+ layout_rectangular()#+ggplot2::xlim(c(0,-6,-6),c(200,6,6)) #xlim determines achis of all 3 pannels
+  #Checkpoint
+  assign("tree_test", tree, envir = .GlobalEnv)
+
+  #Add annotations to tree
+  tree_anno <- tree %<+% info+
+    geom_tippoint(aes(shape=Ontology),colour = "grey30")+
+    geom_tiplab(aes(label=GO_Term),offset = 0.2, size=3.0)+ xlim_tree(10) +# size changes font size while xlim changes x axis limits
+     scale_shape_discrete(name = "Gene ontology domains", labels = c("BP"="Biological Process", "CC"="Cellular Component", "MF"="Molecular Function"))
+  #Checkpoint
+  assign("tree_anno_test",  tree_anno, envir = .GlobalEnv)
+
+  #Prepare data to align to annotated tree
+  data_neg<- data %>% filter(Regulation=="Negative") %>%
+    dplyr::select(label,logFC,weightFisher, Significant,Manual_annotation) %>%
+    mutate(Neg_logFC=logFC) %>% 
+    mutate(Count_neg=Significant) %>% 
+    mutate(Manual_annotation_neg =Manual_annotation)%>% 
+    dplyr::select(-Manual_annotation)
+   #Checkpoint
+  assign("data_neg_test",  data_neg, envir = .GlobalEnv)
+
+  data_pos<- data %>% filter(Regulation=="Positive") %>%
+    dplyr::select(label,logFC,weightFisher,Significant,Manual_annotation) %>%
+    mutate(Pos_logFC=logFC)%>% 
+    mutate(Count_pos=Significant) %>% 
+    mutate(Manual_annotation_pos =Manual_annotation)%>% 
+    dplyr::select(-Manual_annotation)
+
+  data_combined<-full_join(data_neg,data_pos) %>% mutate(weightFisher_num=as.numeric(as.character(weightFisher))) 
+  #Checkpoint
+  assign("data_combined_Fig1",  data_combined, envir = .GlobalEnv)
+
+   
+   #Function to create achsis different for oral and aboral
+  #https://coolbutuseless.github.io/2019/03/07/custom-axis-breaks-on-facetted-ggplot/
+  breaks_fun <- function(x) {
+  if (max(x) > 0) {
+      seq(0, 8, 1)
+    } else {
+      seq(-8 , 0, 1)
+     }
+  }
+
+  #Function to create limits different for oral and aboral
+  limit_fun <- function(x) {
+  if (max(x) > 0) {
+      c(0, 8)
+    } else {
+       c((-8), 0)
+     }
+  }
+
+  #Convert weightFisher to numeric
+  data_combined$weightFisher<-as.numeric(as.character(data_combined$weightFisher))
+
+  #Define colours for fill gradient
+my_colours=c("#808080","#9A9A9A","#B5B5B5","#D0D0D0","#EDEDED","#FFFFFF")#greys
+#my_colours2=c("green","#BEE0CC")
+
+  #Align data to annotated tree
+  # Manual annotation added
+tree_data_m<-  facet_plot(tree_anno ,panel = "neg", geom = geom_tile,
+  aes(x = 0, fill=Manual_annotation_neg),data = data_combined) +# Colour of box background
+    scale_fill_manual(values=col_pal, name="Manual annotations",na.value="white")
+
+  # Adds number onto manual annotation
+ tree_data_mn<- facet_plot(tree_data_m,panel = "neg", data = data_combined, geom = geom_text,
+             aes(x = 0, label = Count_neg))
+ 
+ # Adds new scale
+ tree_data_mns <- tree_data_mn + new_scale_fill()
+ 
+ #Adds boxplot left
+ tree_data_mnsb<- tree_data_mns +   geom_facet(panel = "Not competent", data = data_combined, geom =ggstance::geom_boxploth , #alternative geom_violinh
+              aes(x = Neg_logFC, group = label,fill=weightFisher_num), width = .6) +
+              geom_facet(panel = "Competent", data = data_combined, geom = ggstance::geom_boxploth,
+              aes(x = Pos_logFC, group = label,fill=weightFisher_num), width = .6)+
+              theme_tree2()+
+            # scale_x_continuous(breaks = breaks_fun,limits = limit_fun)
+             scale_fill_gradientn(colours=my_colours,name="weightFisher")
+
+ tree_data_mnsbs <- tree_data_mnsb + new_scale_fill()
+ 
+ tree_data_mnsbsm<-  facet_plot(tree_data_mnsbs ,panel = "pos", geom = geom_tile,
+    aes(x = 0,fill=Manual_annotation_pos),data = data_combined,show.legend = FALSE) +# show.legend = FALSE removes legend since it is the same than the other
+     scale_fill_manual(values=col_pal,name="Manual annotations competent",na.value="white")
+
+ 
+tree_data_mnsbsmn<- facet_plot(tree_data_mnsbsm,panel = "pos", data = data_combined, geom = geom_text,
+             aes(x = 0, label = Count_pos))
+tree_data_mnsbsmn<-facet_labeller(tree_data_mnsbsmn, c(Tree = "Enriched Gene ontology terms"))
+tree_data_mnsbsmnl<-tree_data_mnsbsmn+theme(legend.position="right")
+
+
+gt = ggplot_gtable(ggplot_build(tree_data_mnsbsmnl))
+ assign("gt_check",  gt , envir = .GlobalEnv)
+
+gt$widths[7] = 0.1*gt$widths[7] # in this case it was colmun 7 - reduce the width by a half
+gt$widths[13] = 0.1*gt$widths[13] # in this case it was colmun 7 - reduce the width by a half
+gt$widths[9] = 0.3*gt$widths[9] # in this case it was colmun 7 - reduce the width by a half
+gt$widths[11] = 0.3*gt$widths[11] # in this case it was colmun 7 - reduce the width by a half
+
+ggsave(paste0(saving_path,file_name,".png"), gt,
+       width = 20,
+       height = 28,
+       units =  "cm")
+
+}
+```
+Function for both
+```{r}
+create_similarity_arranged_boxplot_fig1(Data_figure_LM7_vs_LM3,
+                                        nexus_tree=tree_LM7_vs_LM3, 
+                                        saving_path="03_TopGO_Output/v2/Boxplots/", 
+                                        file_name="Boxplot_LM7_vs_LM3_volcano_v2_test",
+                                        top_table_pos=top_table_LM_pos, 
+                                        top_table_neg=top_table_LM_neg,
+                                        label_positive="LM7", 
+                                        label_negative="LM3",
+                                        col_pal = col_pal_LM
+                                        )
+```
+
+
+
+
+```{r}
+create_similarity_arranged_boxplot_fig2(Data_figure_LM7_vs_LM3,
+                                        nexus_tree=tree_LM7_vs_LM3, 
+                                        saving_path="03_TopGO_Output/v2/Boxplots/", 
+                                        file_name="Boxplot_LM7_vs_LM3_volcano_v2_test3",
+
+                                        col_pal = col_pal_LM
+                                        )
+```
+
+#Function 3 
+only 1 manual annotation neg
+```{r}
+create_similarity_arranged_boxplot_fig3<-function(enrich_GO_data, nexus_tree, saving_path, file_name, col_pal){
+  
+  # Colour for manuall annotations
+  col_pal <- col_pal
+  
+  
+  #Prepare data for tree annotations
+  # Filtr for different figure parts if required
+  data<-enrich_GO_data %>% #filter(figure_part==paste0(figu_part)) %>% 
+    # Create column for label that matches tree label
+    mutate(label=GO.ID) %>% 
+    # Create column that represents if logFC is positive or negative so data can be devided into left and right parts
+    mutate(Regulation = ifelse(logFC>0, "Positive", "Negative"))
+
+  #Checkpoint
+  assign("data_test", data, envir = .GlobalEnv)
+  
+  #info = annotation for tree
+  info<- data %>% dplyr::select(label,Ontology,Term, Term_number,GO.ID) %>% mutate(GO_Term=paste(GO.ID, Term_number, sep=" ")) #weightFisher, Significant, Manual_annotation
+  #Checkpoint
+  assign("info_test", info, envir = .GlobalEnv)
+
+  #Plot tree without annotations
+  tree<-ggtree(nexus_tree)+ layout_rectangular()#+ggplot2::xlim(c(0,-6,-6),c(200,6,6)) #xlim determines achis of all 3 pannels
+  #Checkpoint
+  assign("tree_test", tree, envir = .GlobalEnv)
+
+  #Add annotations to tree
+  tree_anno <- tree %<+% info+
+    geom_tippoint(aes(shape=Ontology),colour = "grey30")+
+    geom_tiplab(aes(label=GO_Term),offset = 0.2, size=3.0)+ xlim_tree(10) +# size changes font size while xlim changes x axis limits
+     scale_shape_discrete(name = "Gene ontology domains", labels = c("BP"="Biological Process", "CC"="Cellular Component", "MF"="Molecular Function"))
+  #Checkpoint
+  assign("tree_anno_test",  tree_anno, envir = .GlobalEnv)
+
+  #Prepare data to align to annotated tree
+  data_neg<- data %>% filter(Regulation=="Negative") %>%
+    dplyr::select(label,logFC,weightFisher, Significant,Manual_annotation) %>%
+    mutate(Neg_logFC=logFC) %>% 
+    mutate(Count_neg=Significant) %>% 
+    mutate(Manual_annotation_neg =Manual_annotation)%>% 
+    dplyr::select(-Manual_annotation)
+   #Checkpoint
+  assign("data_neg_test",  data_neg, envir = .GlobalEnv)
+
+  data_pos<- data %>% filter(Regulation=="Positive") %>%
+    dplyr::select(label,logFC,weightFisher,Significant,Manual_annotation) %>%
+    mutate(Pos_logFC=logFC)%>% 
+    mutate(Count_pos=Significant) %>% 
+    mutate(Manual_annotation_pos =Manual_annotation)%>% 
+    dplyr::select(-Manual_annotation)
+
+  data_combined<-full_join(data_neg,data_pos) %>% mutate(weightFisher_num=as.numeric(as.character(weightFisher))) 
+  #Checkpoint
+  assign("data_combined_Fig1",  data_combined, envir = .GlobalEnv)
+
+   
+   #Function to create achsis different for oral and aboral
+  #https://coolbutuseless.github.io/2019/03/07/custom-axis-breaks-on-facetted-ggplot/
+  breaks_fun <- function(x) {
+  if (max(x) > 0) {
+      seq(0, 8, 1)
+    } else {
+      seq(-8 , 0, 1)
+     }
+  }
+
+  #Function to create limits different for oral and aboral
+  limit_fun <- function(x) {
+  if (max(x) > 0) {
+      c(0, 8)
+    } else {
+       c((-8), 0)
+     }
+  }
+
+  #Convert weightFisher to numeric
+  data_combined$weightFisher<-as.numeric(as.character(data_combined$weightFisher))
+
+  #Define colours for fill gradient
+my_colours=c("#808080","#9A9A9A","#B5B5B5","#D0D0D0","#EDEDED","#FFFFFF")#greys
+#my_colours2=c("green","#BEE0CC")
+
+  #Align data to annotated tree
+  # Manual annotation added
+tree_data_m<-  facet_plot(tree_anno ,panel = "neg", geom = geom_tile,
+  aes(x = 0, fill=Manual_annotation_neg),data = data_combined) +# Colour of box background
+    scale_fill_manual(values=col_pal, name="Manual annotations",na.value="white")
+
+  # Adds number onto manual annotation
+ # tree_data_mn<- facet_plot(tree_data_m,panel = "neg", data = data_combined, geom = geom_text,
+ #             aes(x = 0, label = Count_neg))
+ 
+ # # Adds new scale
+ # tree_data_mns <- tree_data_mn + new_scale_fill()
+ # 
+ # #Adds boxplot left
+ # tree_data_mnsb<- tree_data_mns +   geom_facet(panel = "Not competent", data = data_combined, geom =ggstance::geom_boxploth , #alternative geom_violinh
+ #              aes(x = Neg_logFC, group = label,fill=weightFisher_num), width = .6) +
+ #              geom_facet(panel = "Competent", data = data_combined, geom = ggstance::geom_boxploth,
+ #              aes(x = Pos_logFC, group = label,fill=weightFisher_num), width = .6)+
+ #              theme_tree2()+
+ #            # scale_x_continuous(breaks = breaks_fun,limits = limit_fun)
+ #             scale_fill_gradientn(colours=my_colours,name="weightFisher")
+
+#  tree_data_mnsbs <- tree_data_mnsb + new_scale_fill()
+#  
+#  tree_data_mnsbsm<-  facet_plot(tree_data_mnsbs ,panel = "pos", geom = geom_tile,
+#     aes(x = 0,fill=Manual_annotation_pos),data = data_combined,show.legend = FALSE) +# show.legend = FALSE removes legend since it is the same than the other
+#      scale_fill_manual(values=col_pal,name="Manual annotations competent",na.value="white")
+# 
+#  
+# tree_data_mnsbsmn<- facet_plot(tree_data_mnsbsm,panel = "pos", data = data_combined, geom = geom_text,
+#              aes(x = 0, label = Count_pos))
+# tree_data_mnsbsmn<-facet_labeller(tree_data_mnsbsmn, c(Tree = "Enriched Gene ontology terms"))
+# tree_data_mnsbsmnl<-tree_data_mnsbsmn+theme(legend.position="right")
+# 
+# 
+gt = ggplot_gtable(ggplot_build(tree_data_m))
+ assign("gt_check",  gt , envir = .GlobalEnv)
+
+gt$widths[7] = 0.1*gt$widths[7] # in this case it was colmun 7 - reduce the width by a half
+gt$widths[13] = 0.1*gt$widths[13] # in this case it was colmun 7 - reduce the width by a half
+gt$widths[9] = 0.3*gt$widths[9] # in this case it was colmun 7 - reduce the width by a half
+gt$widths[11] = 0.3*gt$widths[11] # in this case it was colmun 7 - reduce the width by a half
+
+ggsave(paste0(saving_path,file_name,".png"), gt,
+       width = 20,
+       height = 28,
+       units =  "cm")
+
+}
+```
+
+
+```{r}
+create_similarity_arranged_boxplot_fig3(Data_figure_LM7_vs_LM3,
+                                        nexus_tree=tree_LM7_vs_LM3, 
+                                        saving_path="03_TopGO_Output/v2/Boxplots/", 
+                                        file_name="Boxplot_LM7_vs_LM3_volcano_v2_test4",
+
+                                        col_pal = col_pal_LM
+                                        )
+```
+
+#Function 4 all manual annotation in neg
+```{r}
+create_similarity_arranged_boxplot_fig4<-function(enrich_GO_data, nexus_tree, saving_path, file_name, col_pal, panel_label){
+  
+  # Colour for manuall annotations
+  col_pal <- col_pal
+  
+  
+  #Prepare data for tree annotations
+  # Filtr for different figure parts if required
+  data<-enrich_GO_data %>% #filter(figure_part==paste0(figu_part)) %>% 
+    # Create column for label that matches tree label
+    mutate(label=GO.ID) %>% 
+    # Create column that represents if logFC is positive or negative so data can be devided into left and right parts
+    mutate(Regulation = ifelse(logFC>0, "Positive", "Negative"))
+
+  #Checkpoint
+  assign("data_test", data, envir = .GlobalEnv)
+  
+  #info = annotation for tree
+  info<- data %>% dplyr::select(label,Ontology,Term, Term_number,GO.ID) %>% mutate(GO_Term=paste(GO.ID, Term_number, sep=" ")) #weightFisher, Significant, Manual_annotation
+  #Checkpoint
+  assign("info_test", info, envir = .GlobalEnv)
+
+  #Plot tree without annotations
+  tree<-ggtree(nexus_tree)+ layout_rectangular()#+ggplot2::xlim(c(0,-6,-6),c(200,6,6)) #xlim determines achis of all 3 pannels
+  #Checkpoint
+  assign("tree_test", tree, envir = .GlobalEnv)
+
+  #Add annotations to tree
+  tree_anno <- tree %<+% info+
+    geom_tippoint(aes(shape=Ontology),colour = "grey30")+
+    geom_tiplab(aes(label=GO_Term),offset = 0.2, size=3.0)+ xlim_tree(10) +# size changes font size while xlim changes x axis limits
+     scale_shape_discrete(name = "Gene ontology domains", labels = c("BP"="Biological Process", "CC"="Cellular Component", "MF"="Molecular Function"))
+  #Checkpoint
+  assign("tree_anno_test",  tree_anno, envir = .GlobalEnv)
+
+  #Prepare data to align to annotated tree
+  data_neg<- data %>% filter(Regulation=="Negative") %>%
+    dplyr::select(label,logFC,weightFisher, Significant,Manual_annotation)# %>%
+   # mutate(Neg_logFC=logFC) %>% 
+  #  mutate(Count_neg=Significant) %>% 
+   # mutate(Manual_annotation_neg =Manual_annotation)%>% 
+  #  dplyr::select(-Manual_annotation)
+   #Checkpoint
+  assign("data_neg_test",  data_neg, envir = .GlobalEnv)
+
+  data_pos<- data %>% filter(Regulation=="Positive") %>%
+    dplyr::select(label,logFC,weightFisher,Significant,Manual_annotation) #%>%
+ #   mutate(Pos_logFC=logFC)%>% 
+ #   mutate(Count_pos=Significant) %>% 
+ #   mutate(Manual_annotation_pos =Manual_annotation)%>% 
+ #   dplyr::select(-Manual_annotation)
+
+     #Checkpoint
+  assign("data_pos_test",  data_pos, envir = .GlobalEnv)
+  
+  data_combined<-rbind(data_neg,data_pos) %>% mutate(weightFisher_num=as.numeric(as.character(weightFisher))) 
+  #Checkpoint
+  assign("data_combined_Fig1",  data_combined, envir = .GlobalEnv)
+
+   
+   #Function to create achsis different for oral and aboral
+  #https://coolbutuseless.github.io/2019/03/07/custom-axis-breaks-on-facetted-ggplot/
+  breaks_fun <- function(x) {
+  if (max(x) > 0) {
+      seq(0, 8, 1)
+    } else {
+      seq(-8 , 0, 1)
+     }
+  }
+
+  #Function to create limits different for oral and aboral
+  limit_fun <- function(x) {
+  if (max(x) > 0) {
+      c(0, 8)
+    } else {
+       c((-8), 0)
+     }
+  }
+
+  #Convert weightFisher to numeric
+  data_combined$weightFisher<-as.numeric(as.character(data_combined$weightFisher))
+
+  #Define colours for fill gradient
+my_colours=c("#808080","#9A9A9A","#B5B5B5","#D0D0D0","#EDEDED","#FFFFFF")#greys
+#my_colours2=c("green","#BEE0CC")
+
+  #Align data to annotated tree
+  # Manual annotation added
+tree_data_m<-  facet_plot(tree_anno ,panel = "neg", geom = geom_tile,
+  aes(x = 0, fill=Manual_annotation),data = data_combined) +# Colour of box background
+    scale_fill_manual(values=col_pal, name="Manual annotations",na.value="white")
+
+  # Adds number onto manual annotation
+ # tree_data_mn<- facet_plot(tree_data_m,panel = "neg", data = data_combined, geom = geom_text,
+ #             aes(x = 0, label = Count_neg))
+ 
+ # Adds new scale
+ tree_data_ms <- tree_data_m + new_scale_fill()
+
+ #x=c("test")
+ #Adds boxplot left
+ tree_data_msb<- tree_data_ms +   geom_facet(panel = paste(panel_label), data = data_combined, geom =ggstance::geom_boxploth , #alternative geom_violinh
+              aes(x = logFC, group = label,fill=weightFisher_num), width = .6) +
+             # geom_facet(panel = "Competent", data = data_combined, geom = ggstance::geom_boxploth,
+             # aes(x = Pos_logFC, group = label,fill=weightFisher_num), width = .6)+
+              theme_tree2()+
+            # scale_x_continuous(breaks = breaks_fun,limits = limit_fun)
+             scale_fill_gradientn(colours=my_colours,name="weightFisher")
+
+#  tree_data_mnsbs <- tree_data_mnsb + new_scale_fill()
+#  
+#  tree_data_mnsbsm<-  facet_plot(tree_data_mnsbs ,panel = "pos", geom = geom_tile,
+#     aes(x = 0,fill=Manual_annotation_pos),data = data_combined,show.legend = FALSE) +# show.legend = FALSE removes legend since it is the same than the other
+#      scale_fill_manual(values=col_pal,name="Manual annotations competent",na.value="white")
+# 
+#  
+# tree_data_mnsbsmn<- facet_plot(tree_data_mnsbsm,panel = "pos", data = data_combined, geom = geom_text,
+#              aes(x = 0, label = Count_pos))
+# tree_data_mnsbsmn<-facet_labeller(tree_data_mnsbsmn, c(Tree = "Enriched Gene ontology terms"))
+# tree_data_mnsbsmnl<-tree_data_mnsbsmn+theme(legend.position="right")
+# 
+# 
+gt = ggplot_gtable(ggplot_build( tree_data_msb))
+ assign("gt_check",  gt , envir = .GlobalEnv)
+
+gt$widths[7] = 0.1*gt$widths[7] # in this case it was colmun 7 - reduce the width by a half
+gt$widths[13] = 0.1*gt$widths[13] # in this case it was colmun 7 - reduce the width by a half
+gt$widths[9] = 0.3*gt$widths[9] # in this case it was colmun 7 - reduce the width by a half
+gt$widths[11] = 0.3*gt$widths[11] # in this case it was colmun 7 - reduce the width by a half
+
+ggsave(paste0(saving_path,file_name,".png"), gt,
+       width = 20,
+       height = 28,
+       units =  "cm")
+
+}
+```
+
+
+```{r}
+create_similarity_arranged_boxplot_fig4(Data_figure_LM7_vs_LM3,
+                                        nexus_tree=tree_LM7_vs_LM3, 
+                                        saving_path="03_TopGO_Output/v2/Boxplots/", 
+                                        file_name="Boxplot_LM7_vs_LM3_volcano_v2_test4",
+
+                                        col_pal = col_pal_LM
+                                        )
+```
+
+input only tree pos
+```{r}
+create_similarity_arranged_boxplot_fig4(Data_figure_LM7_vs_LM3,
+                                        nexus_tree=tree_LM7_vs_LM3_pos,
+                                        saving_path="03_TopGO_Output/v2/Boxplots/", 
+                                        file_name="Boxplot_LM7_vs_LM3_volcano_v2_test5",
+
+                                        col_pal = col_pal_LM,
+                                        panel_label="Test2"
+                                        )
+```
+
+
+#Function 5 all manual annotation in neg
+```{r}
+create_similarity_arranged_boxplot_fig5<-function(enrich_GO_data, nexus_tree, saving_path, file_name, col_pal, panel_label){
+  
+  # Colour for manuall annotations
+  col_pal <- col_pal
+  
+  
+  #Prepare data for tree annotations
+  # Filtr for different figure parts if required
+  data<-enrich_GO_data %>% #filter(figure_part==paste0(figu_part)) %>% 
+    # Create column for label that matches tree label
+    mutate(label=GO.ID) %>% 
+    # Create column that represents if logFC is positive or negative so data can be devided into left and right parts
+    mutate(Regulation = ifelse(logFC>0, "Positive", "Negative"))
+
+  #Checkpoint
+  assign("data_test", data, envir = .GlobalEnv)
+  
+  #info = annotation for tree
+  info<- data %>% dplyr::select(label,Ontology,Term, Term_number,GO.ID) %>% mutate(GO_Term=paste(GO.ID, Term_number, sep=" ")) #weightFisher, Significant, Manual_annotation
+  #Checkpoint
+  assign("info_test", info, envir = .GlobalEnv)
+
+  #Plot tree without annotations
+  tree<-ggtree(nexus_tree)+ layout_rectangular()#+ggplot2::xlim(c(0,-6,-6),c(200,6,6)) #xlim determines achis of all 3 pannels
+  #Checkpoint
+  assign("tree_test", tree, envir = .GlobalEnv)
+
+  #Add annotations to tree
+  tree_anno <- tree %<+% info+
+    geom_tippoint(aes(shape=Ontology),colour = "grey30")+
+    geom_tiplab(aes(label=GO_Term),offset = 0.2, size=2.5)+ xlim_tree(8) +# size changes font size while xlim changes x axis limits
+     scale_shape_discrete(name = "Gene ontology domains", labels = c("BP"="Biological Process", "CC"="Cellular Component", "MF"="Molecular Function"))+
+    theme(axis.text.x=element_blank()) # Removes phylogenetic tree label
+  
+  
+  #Checkpoint
+  assign("tree_anno_test",  tree_anno, envir = .GlobalEnv)
+
+  #Prepare data to align to annotated tree
+  data_neg<- data %>% filter(Regulation=="Negative") %>%
+    dplyr::select(label,logFC,weightFisher, Significant,Manual_annotation)# %>%
+   # mutate(Neg_logFC=logFC) %>% 
+  #  mutate(Count_neg=Significant) %>% 
+   # mutate(Manual_annotation_neg =Manual_annotation)%>% 
+  #  dplyr::select(-Manual_annotation)
+   #Checkpoint
+  assign("data_neg_test",  data_neg, envir = .GlobalEnv)
+
+  data_pos<- data %>% filter(Regulation=="Positive") %>%
+    dplyr::select(label,logFC,weightFisher,Significant,Manual_annotation) #%>%
+ #   mutate(Pos_logFC=logFC)%>% 
+ #   mutate(Count_pos=Significant) %>% 
+ #   mutate(Manual_annotation_pos =Manual_annotation)%>% 
+ #   dplyr::select(-Manual_annotation)
+
+     #Checkpoint
+  assign("data_pos_test",  data_pos, envir = .GlobalEnv)
+  
+  data_combined<-rbind(data_neg,data_pos) %>% mutate(weightFisher_num=as.numeric(as.character(weightFisher))) 
+  #Checkpoint
+  assign("data_combined_Fig1",  data_combined, envir = .GlobalEnv)
+
+   
+   #Function to create achsis different for oral and aboral
+  #https://coolbutuseless.github.io/2019/03/07/custom-axis-breaks-on-facetted-ggplot/
+  breaks_fun <- function(x) {
+  if (max(x) > 0) {
+      seq(0, 8, 1)
+    } else {
+      seq(-8 , 0, 1)
+     }
+  }
+
+  #Function to create limits different for oral and aboral
+  limit_fun <- function(x) {
+  if (max(x) > 0) {
+      c(0, 8)
+    } else {
+       c((-8), 0)
+     }
+  }
+
+  #Convert weightFisher to numeric
+  data_combined$weightFisher<-as.numeric(as.character(data_combined$weightFisher))
+
+  #Define colours for fill gradient
+my_colours=c("#808080","#9A9A9A","#B5B5B5","#D0D0D0","#EDEDED","#FFFFFF")#greys
+#my_colours2=c("green","#BEE0CC")
+
+#Adds boxplot left
+ tree_data_b<- tree_anno+   geom_facet(panel = paste(panel_label), data = data_combined, geom =ggstance::geom_boxploth , #alternative geom_violinh
+              aes(x = logFC, group = label,fill=weightFisher_num), width = .6) +
+             # geom_facet(panel = "Competent", data = data_combined, geom = ggstance::geom_boxploth,
+             # aes(x = Pos_logFC, group = label,fill=weightFisher_num), width = .6)+
+              theme_tree2()+
+            # scale_x_continuous(breaks = breaks_fun,limits = limit_fun)
+             scale_fill_gradientn(colours=my_colours,name="weightFisher")+
+     #labs(caption="log2 foldchange")
+   xlab("                                                                          log2 foldchange")
+
+  # Adds new scale
+ tree_data_bs <- tree_data_b + new_scale_fill()
+ 
+  #Align data to annotated tree
+  # Manual annotation added
+ tree_data_bsm<-  facet_plot(tree_data_bs ,panel = " ", geom = geom_tile,
+  aes(x = 0, fill=Manual_annotation),data = data_combined) +# Colour of box background
+    scale_fill_manual(values=col_pal, name="Manual annotations",na.value="white")
+
+  # Adds number onto manual annotation
+ # tree_data_mn<- facet_plot(tree_data_m,panel = "neg", data = data_combined, geom = geom_text,
+ #             aes(x = 0, label = Count_neg))
+ 
+
+
+ #x=c("test")
+ 
+
+#  tree_data_mnsbs <- tree_data_mnsb + new_scale_fill()
+#  
+#  tree_data_mnsbsm<-  facet_plot(tree_data_mnsbs ,panel = "pos", geom = geom_tile,
+#     aes(x = 0,fill=Manual_annotation_pos),data = data_combined,show.legend = FALSE) +# show.legend = FALSE removes legend since it is the same than the other
+#      scale_fill_manual(values=col_pal,name="Manual annotations competent",na.value="white")
+# 
+#  
+# tree_data_mnsbsmn<- facet_plot(tree_data_mnsbsm,panel = "pos", data = data_combined, geom = geom_text,
+#              aes(x = 0, label = Count_pos))
+ tree_data_bsml<-facet_labeller(tree_data_bsm, c(Tree = "Enriched Gene ontology terms"))
+ tree_data_bsmll<-tree_data_bsml+theme(legend.position="right",
+                                       legend.box = "vertical")
+# 
+# 
+gt = ggplot_gtable(ggplot_build( tree_data_bsmll))
+ assign("gt_check",  gt , envir = .GlobalEnv)
+
+ 
+#https://groups.google.com/g/bioc-ggtree/c/tZ0qkluBeGU/m/nkfWC9ixCwAJ
+#gt_check$layout$l[grep('panel-1-2', gt_check$layout$name)] # you want to find the column specific to panel-1-2
+gt$widths[7] = 0.4*gt$widths[7] # in this case it was colmun 7 - reduce the width by a half
+#gt$widths[13] = 0.1*gt$widths[13] # in this case it was colmun 7 - reduce the width by a half
+gt$widths[9] = 0.05*gt$widths[9] # in this case it was colmun 7 - reduce the width by a half
+#gt$widths[11] = 0.3*gt$widths[11] # in this case it was colmun 7 - reduce the width by a half
+
+#Make height of the plot depending on the number of enriched GO terms
+height<-length(nexus_tree$tip.label)*0.5
+
+ggsave(paste0(saving_path,file_name,".png"), gt,
+      width = 20,
+      height = height,
+     units =  "cm")
+
+}
+```
+
+
+
+input only tree pos
+```{r}
+create_similarity_arranged_boxplot_fig5(Data_figure_LM7_vs_LM3,
+                                        nexus_tree=tree_LM7_vs_LM3_pos,
+                                        saving_path="03_TopGO_Output/v2/Boxplots/", 
+                                        file_name="Boxplot_LM7_vs_LM3_pos",
+                                        col_pal = col_pal_LM,
+                                        panel_label="Competent"
+                                        )
+```
+
+
+```{r}
+create_similarity_arranged_boxplot_fig5(Data_figure_LM7_vs_LM3,
+                                        nexus_tree=tree_LM7_vs_LM3_neg,
+                                        saving_path="03_TopGO_Output/v2/Boxplots/", 
+                                        file_name="Boxplot_LM7_vs_LM3_neg",
+                                        col_pal = col_pal_LM,
+                                        panel_label="Pre-competent"
+                                        )
+```
+
+
+Cilia
+```{r}
+create_similarity_arranged_boxplot_fig5(Data_figure_CM7_vs_CM3,
+                                        nexus_tree=tree_CM7_vs_CM3_neg,
+                                        saving_path="03_TopGO_Output/v2/Boxplots/", 
+                                        file_name="Boxplot_CM7_vs_CM3_neg",
+                                        col_pal = col_pal_CM,
+                                        panel_label="Pre-competent"
+                                        )
+```
+
+
+```{r}
+create_similarity_arranged_boxplot_fig5(Data_figure_CM7_vs_CM3,
+                                        nexus_tree=tree_CM7_vs_CM3_pos,
+                                        saving_path="03_TopGO_Output/v2/Boxplots/", 
+                                        file_name="Boxplot_CM7_vs_CM3_pos",
+                                        col_pal = col_pal_CM,
+                                        panel_label="Competent"
+                                        )
+```
+
+
+#Volcanoplot function
+
+```{r}
+Plot_volcanoplot<-function(enrich_GO_data, nexus_tree, saving_path, file_name,top_table_pos, top_table_neg,label_positive, label_negative, col_pal){
+   # Colour for manuall annotations
+  col_pal <- col_pal
+  
+  # Select data to label most differentially expressed proteins
+    label_pos <- top_table_pos %>%arrange(desc(logFC)) %>% head(10) 
+    assign("label_pos",label_pos,envir = .GlobalEnv)
+    label_neg <- top_table_neg %>% arrange(logFC) %>% head(10)
+   assign("label_neg",label_neg,envir = .GlobalEnv)
+  
+  # Prepare volcanoplot
+  
+  # Select the most important columns for volcanoplot
+  input_volcano_pos<-top_table_pos  %>% dplyr::select(Group_ids,uniprot_id, logFC,sca.adj.pval, ipr_GO_merged,Manual_annotation,contrast,Regulation,Manual_annotation) 
+  input_volcano_neg<-top_table_neg  %>% dplyr::select(Group_ids,uniprot_id, logFC,sca.adj.pval, ipr_GO_merged,Manual_annotation,contrast,Regulation,Manual_annotation) 
+ 
+  # Combines both tables to include in one volcanoplot
+  input_volcano<-rbind(input_volcano_pos,input_volcano_neg)
+  # assign(paste0("Input_test"), input_volcano,envir = .GlobalEnv)
+  
+  # Create names that are used in legend description
+   positive_name<-paste(label_positive, ">", label_negative, sep = " ")
+   negative_name<- paste(label_positive, "<", label_negative, sep = " ")
+  
+  # Volcano plot
+  volcano_plot<-ggplot(input_volcano,aes(x=logFC, y=-log10(sca.adj.pval),colour=Manual_annotation)) +
+ # geom_point(alpha=0.7, fill="black") +
+  geom_icon(aes(image="fast-food")) +
+    
+   scale_colour_manual(values=col_pal, limits = names(col_pal),name="",na.value="grey")+
+
+  # Add title to plot
+  #  ggtitle(paste(contrast)) +
+
+  # Axis labels
+    xlab("log2 fold change") +
+    ylab("-log10 adjusted p-value") +
+    
+     #Highlight the most differential genes with uniprot id   
+  geom_text_repel(data=label_pos,aes(label=uniprot_id),colour="black")+
+  geom_text_repel(data=label_neg,aes(label=uniprot_id),colour="black")+
+
+  # Themes to influence legend and labels
+    theme(legend.position='right',plot.title = element_text(size = rel(1.5), hjust = 0.5),axis.title = element_text(size = rel(1.25)))+
+    theme_bw()
+  
+ggsave(paste0(saving_path,file_name,".png"),  volcano_plot,
+      width = 20,
+      height = 15,
+     units =  "cm")
+
+ 
+}
+```
+
+
+```{r}
+Plot_volcanoplot(Data_figure_LM7_vs_LM3,
+                                        nexus_tree=tree_LM7_vs_LM3, 
+                                        saving_path="02_Volcanoplots/", 
+                                        file_name="Volcano_LM7_vs_LM3_v2_2",
+                                        top_table_pos=top_table_LM_pos, 
+                                        top_table_neg=top_table_LM_neg,
+                                        label_positive="LM7", 
+                                        label_negative="LM3",
+                                        col_pal = col_pal_LM
+                                        )
+```
+
+```{r}
+Plot_volcanoplot(Data_figure_CM7_vs_CM3,
+                                        nexus_tree=tree_CM7_vs_CM3, 
+                                        saving_path="02_Volcanoplots/", 
+                                        file_name="Volcano_CM7_vs_CM3_v2_2",
+                                        top_table_pos=top_table_CM_pos, 
+                                        top_table_neg=top_table_CM_neg,
+                                        label_positive="CM7", 
+                                        label_negative="CM3",
+                                        col_pal = col_pal_CM
+                                        )
+```
+
+
+
+-----
+
+```{r}
+A<-create_similarity_arranged_boxplot_fig5(Data_figure_LM7_vs_LM3,
+                                        nexus_tree=tree_LM7_vs_LM3_pos,
+                                        saving_path="03_TopGO_Output/v2/Boxplots/", 
+                                        file_name="Boxplot_LM7_vs_LM3_pos",
+                                        col_pal = col_pal_LM,
+                                        panel_label="Pre-competent"
+                                        )
+```
+
+
+```{r}
+B<-create_similarity_arranged_boxplot_fig5(Data_figure_LM7_vs_LM3,
+                                        nexus_tree=tree_LM7_vs_LM3_neg,
+                                        saving_path="03_TopGO_Output/v2/Boxplots/", 
+                                        file_name="Boxplot_LM7_vs_LM3_neg",
+                                        col_pal = col_pal_LM,
+                                        panel_label="Competent"
+                                        )
+```
+
+```{r}
+B
+```
+
+
+#Function 6 pos and neg tree in one function
+```{r}
+create_similarity_arranged_boxplot_fig6<-function(enrich_GO_data, nexus_tree_top, nexus_tree_bottom, saving_path, file_name, col_pal, panel_label_top,panel_label_bottom){
+  
+#Required for both trees  
+  # Colour for manuall annotations
+  col_pal <- col_pal
+
+  #Prepare data for tree annotations
+  # Filtr for different figure parts if required
+  data<-enrich_GO_data %>% #filter(figure_part==paste0(figu_part)) %>% 
+    # Create column for label that matches tree label
+    mutate(label=GO.ID) %>% 
+    # Create column that represents if logFC is positive or negative so data can be devided into left and right parts
+    mutate(Regulation = ifelse(logFC>0, "Positive", "Negative"))
+
+  #Checkpoint
+  assign("data_test", data, envir = .GlobalEnv)
+  
+  #info = annotation for tree
+  info<- data %>% dplyr::select(label,Ontology,Term, Term_number,GO.ID) %>% mutate(GO_Term=paste(GO.ID, Term_number, sep=" ")) #weightFisher, Significant, Manual_annotation
+  #Checkpoint
+  assign("info_test", info, envir = .GlobalEnv)
+
+    #Prepare data to align to annotated tree
+  data_neg<- data %>% filter(Regulation=="Negative") %>%
+    dplyr::select(label,logFC,weightFisher, Significant,Manual_annotation)# %>%
+   # mutate(Neg_logFC=logFC) %>% 
+  #  mutate(Count_neg=Significant) %>% 
+   # mutate(Manual_annotation_neg =Manual_annotation)%>% 
+  #  dplyr::select(-Manual_annotation)
+   #Checkpoint
+  assign("data_neg_test",  data_neg, envir = .GlobalEnv)
+
+  data_pos<- data %>% filter(Regulation=="Positive") %>%
+    dplyr::select(label,logFC,weightFisher,Significant,Manual_annotation) #%>%
+ #   mutate(Pos_logFC=logFC)%>% 
+ #   mutate(Count_pos=Significant) %>% 
+ #   mutate(Manual_annotation_pos =Manual_annotation)%>% 
+ #   dplyr::select(-Manual_annotation)
+
+     #Checkpoint
+  assign("data_pos_test",  data_pos, envir = .GlobalEnv)
+  
+  data_combined<-rbind(data_neg,data_pos) %>% mutate(weightFisher_num=as.numeric(as.character(weightFisher))) 
+  #Checkpoint
+  assign("data_combined_Fig1",  data_combined, envir = .GlobalEnv)
+
+   
+   #Function to create achsis different for oral and aboral
+  #https://coolbutuseless.github.io/2019/03/07/custom-axis-breaks-on-facetted-ggplot/
+  breaks_fun <- function(x) {
+  if (max(x) > 0) {
+      seq(0, 8, 1)
+    } else {
+      seq(-8 , 0, 1)
+     }
+  }
+
+  #Function to create limits different for oral and aboral
+  limit_fun <- function(x) {
+  if (max(x) > 0) {
+      c(0, 8)
+    } else {
+       c((-8), 0)
+     }
+  }
+
+  #Convert weightFisher to numeric
+  data_combined$weightFisher<-as.numeric(as.character(data_combined$weightFisher))
+
+  #Define colours for fill gradient
+my_colours=c("#808080","#9A9A9A","#B5B5B5","#D0D0D0","#EDEDED","#FFFFFF")#greys
+
+
+# Tree top
+  
+  #Plot tree without annotations
+  tree_top<-ggtree(nexus_tree_top)+ layout_rectangular()#+ggplot2::xlim(c(0,-6,-6),c(200,6,6)) #xlim determines achis of all 3 pannels
+  #Checkpoint
+  #assign("tree_top_test", tree, envir = .GlobalEnv)
+
+  #Add annotations to tree
+  tree_top_anno <- tree_top %<+% info+
+    geom_tippoint(aes(shape=Ontology),colour = "grey30")+
+    geom_tiplab(aes(label=GO_Term),offset = 0.2, size=4.0)+ xlim_tree(9) +# size changes font size while xlim changes x axis limits
+     scale_shape_discrete(name = "Gene ontology domains", labels = c("BP"="Biological Process", "CC"="Cellular Component", "MF"="Molecular Function"))
+  #Checkpoint
+  #assign("tree_top_anno_test",  tree_anno, envir = .GlobalEnv)
+
+
+#Adds boxplot left
+ tree_top_data_b<-  tree_top_anno +   geom_facet(panel = paste(panel_label_top), data = data_combined, geom =ggstance::geom_boxploth , #alternative geom_violinh
+              aes(x = logFC, group = label,fill=weightFisher_num), width = .6) +
+             # geom_facet(panel = "Competent", data = data_combined, geom = ggstance::geom_boxploth,
+             # aes(x = Pos_logFC, group = label,fill=weightFisher_num), width = .6)+
+              theme_tree2()+
+            # scale_x_continuous(breaks = breaks_fun,limits = limit_fun)
+             scale_fill_gradientn(colours=my_colours,name="weightFisher")
+
+  # Adds new scale
+ tree_top_data_bs <- tree_top_data_b + new_scale_fill()
+ 
+  #Align data to annotated tree
+  # Manual annotation added
+ tree_top_data_bsm<-  facet_plot(tree_top_data_bs ,panel = " ", geom = geom_tile,
+  aes(x = 0, fill=Manual_annotation),data = data_combined) +# Colour of box background
+    scale_fill_manual(values=col_pal, name="Manual annotations",na.value="white")
+ #rename tree panel
+ tree_top_data_bsml<-facet_labeller(tree_top_data_bsm, c(Tree = "Enriched Gene ontology terms"))
+ tree_top_data_bsmll<-tree_top_data_bsml+theme(legend.position="bottom")
+
+top_gt = ggplot_gtable(ggplot_build(tree_top_data_bsmll))
+ assign("gt_check",  top_gt , envir = .GlobalEnv)
+
+ 
+#https://groups.google.com/g/bioc-ggtree/c/tZ0qkluBeGU/m/nkfWC9ixCwAJ
+#gt_check$layout$l[grep('panel-1-2', gt_check$layout$name)] # you want to find the column specific to panel-1-2
+top_gt$widths[7] = 0.45*top_gt$widths[7] # in this case it was colmun 7 - reduce the width by a half
+#gt$widths[13] = 0.1*gt$widths[13] # in this case it was colmun 7 - reduce the width by a half
+top_gt$widths[9] = 0.1*top_gt$widths[9] # in this case it was colmun 7 - reduce the width by a half
+#gt$widths[11] = 0.3*gt$widths[11] # in this case it was colmun 7 - reduce the width by a half
+
+
+# Tree bottom
+  
+  #Plot tree without annotations
+  tree_bottom<-ggtree(nexus_tree_bottom)+ layout_rectangular()#+ggplot2::xlim(c(0,-6,-6),c(200,6,6)) #xlim determines achis of all 3 pannels
+  #Checkpoint
+  #assign("tree_top_test", tree, envir = .GlobalEnv)
+
+  #Add annotations to tree
+  tree_bottom_anno <- tree_bottom %<+% info+
+    geom_tippoint(aes(shape=Ontology),colour = "grey30")+
+    geom_tiplab(aes(label=GO_Term),offset = 0.2, size=4.0)+ xlim_tree(9) +# size changes font size while xlim changes x axis limits
+     scale_shape_discrete(name = "Gene ontology domains", labels = c("BP"="Biological Process", "CC"="Cellular Component", "MF"="Molecular Function"))
+  #Checkpoint
+  #assign("tree_top_anno_test",  tree_anno, envir = .GlobalEnv)
+
+
+#Adds boxplot left
+ tree_bottom_data_b<-  tree_bottom_anno +   geom_facet(panel = paste(panel_label_bottom), data = data_combined, geom =ggstance::geom_boxploth , #alternative geom_violinh
+              aes(x = logFC, group = label,fill=weightFisher_num), width = .6) +
+             # geom_facet(panel = "Competent", data = data_combined, geom = ggstance::geom_boxploth,
+             # aes(x = Pos_logFC, group = label,fill=weightFisher_num), width = .6)+
+              theme_tree2()+
+            # scale_x_continuous(breaks = breaks_fun,limits = limit_fun)
+             scale_fill_gradientn(colours=my_colours,name="weightFisher")
+
+  # Adds new scale
+ tree_bottom_data_bs <- tree_bottom_data_b + new_scale_fill()
+ 
+  #Align data to annotated tree
+  # Manual annotation added
+ tree_bottom_data_bsm<-  facet_plot(tree_bottom_data_bs ,panel = " ", geom = geom_tile,
+  aes(x = 0, fill=Manual_annotation),data = data_combined) +# Colour of box background
+    scale_fill_manual(values=col_pal, name="Manual annotations",na.value="white")
+ #rename tree panel
+ tree_bottom_data_bsml<-facet_labeller(tree_bottom_data_bsm, c(Tree = "Enriched Gene ontology terms"))
+ tree_bottom_data_bsmll<-tree_bottom_data_bsml+theme(legend.position="none")
+
+bottom_gt = ggplot_gtable(ggplot_build(tree_bottom_data_bsmll))
+ assign("gt_bottom_check",  bottom_gt , envir = .GlobalEnv)
+
+ 
+#https://groups.google.com/g/bioc-ggtree/c/tZ0qkluBeGU/m/nkfWC9ixCwAJ
+#gt_check$layout$l[grep('panel-1-2', gt_check$layout$name)] # you want to find the column specific to panel-1-2
+bottom_gt$widths[7] = 0.45*bottom_gt$widths[7] # in this case it was colmun 7 - reduce the width by a half
+#gt$widths[13] = 0.1*gt$widths[13] # in this case it was colmun 7 - reduce the width by a half
+bottom_gt$widths[9] = 0.1*bottom_gt$widths[9] # in this case it was colmun 7 - reduce the width by a half
+#gt$widths[11] = 0.3*gt$widths[11] # in this case it was colmun 7 - reduce the width by a half
+
+
+
+#grid.newpage()
+#<-grid.draw(top_gt)
+
+grid.newpage()
+#B<-grid.draw(bottom_gt)
+
+patchwork <- top_gt/bottom_gt + 
+  plot_layout(
+    ncol = 1,
+    nrow = 2)+
+     plot_annotation(tag_levels = 'A')
+
+ assign("patchwork",  patchwork, envir = .GlobalEnv)
+#     
+# patchwork
+# ggsave(paste0(saving_path,file_name,".png"), width = 20, height = 28, unit = "cm")
+
+#+
+  #plot_layout(ncol=1,nrow = 2)+
+ # plot_annotation(tag_levels = 'A')
+# 
+# together
+# ggsave(paste0(saving_path,file_name,".png"),
+#        width = 20,
+#        height = 28,
+#        units =  "cm")
+
+}
+```
+
+
+```{r}
+create_similarity_arranged_boxplot_fig6(enrich_GO_data=Data_figure_LM7_vs_LM3,
+                                        nexus_tree_top=tree_LM7_vs_LM3_neg,
+                                        nexus_tree_bottom=tree_LM7_vs_LM3_pos,
+                                        saving_path="03_TopGO_Output/v2/Boxplots/", 
+                                        file_name="Boxplot_LM7_vs_LM3_volcano_v2_test6",
+                                        col_pal = col_pal_LM,
+                                        panel_label_top="Pre-competent",
+                                        panel_label_bottom="Competent"
+                                        )
+```
+
+ ,
+
+
+
+
+
+
+
+```{r}
+create_similarity_arranged_boxplot_fig1(Data_figure_CM7_vs_CM3,
+                                        nexus_tree=tree_CM7_vs_CM3, 
+                                        saving_path="03_TopGO_Output/v2/Boxplots/", 
+                                        file_name="Boxplot_CM7_vs_CM3_volcano_v2",
+                                        top_table_pos=top_table_CM_pos, 
+                                        top_table_neg=top_table_CM_neg,
+                                        label_positive="CM7", 
+                                        label_negative="CM3",
+                                        col_pal = col_pal_CM
+                                        )
+```
+
+
+Run function for separate figure
+```{r}
+create_similarity_arranged_boxplot_sep<-function(enrich_GO_data, nexus_tree, saving_path, file_name,top_table_pos, top_table_neg,label_positive, label_negative, col_pal, stage ){
+  
+  # Colour for manuall annotations
+  col_pal <- col_pal
+  
+  # Select data to label most differentially expressed proteins
+    label_pos <- top_table_pos %>%arrange(desc(logFC)) %>% head(10) 
+    assign("label_pos",label_pos,envir = .GlobalEnv)
+    label_neg <- top_table_neg %>% arrange(logFC) %>% head(10)
+   assign("label_neg",label_neg,envir = .GlobalEnv)
+  
+  # # Prepare volcanoplot
+  # 
+  # # Select the most important columns for volcanoplot
+  # input_volcano_pos<-top_table_pos  %>% dplyr::select(Group_ids,uniprot_id, logFC,sca.adj.pval, ipr_GO_merged,Manual_annotation,contrast,Regulation,Manual_annotation) 
+  # input_volcano_neg<-top_table_neg  %>% dplyr::select(Group_ids,uniprot_id, logFC,sca.adj.pval, ipr_GO_merged,Manual_annotation,contrast,Regulation,Manual_annotation) 
+  # 
+  # # Combines both tables to include in one volcanoplot
+  # input_volcano<-rbind(input_volcano_pos,input_volcano_neg)
+  # # assign(paste0("Input_test"), input_volcano,envir = .GlobalEnv)
+  # 
+  # # Create names that are used in legend description
+  #  positive_name<-paste(label_positive, ">", label_negative, sep = " ")
+  #  negative_name<- paste(label_positive, "<", label_negative, sep = " ")
+  # 
+  # # Volcano plot
+  # volcano_plot<-ggplot(input_volcano,aes(x=logFC, y=-log10(sca.adj.pval),colour=Manual_annotation)) +
+  # geom_point(alpha=0.7, fill="black") +
+  #  scale_colour_manual(values=col_pal, limits = names(col_pal),name="",na.value="grey")+
+  # 
+  # # Add title to plot
+  # #  ggtitle(paste(contrast)) +
+  # 
+  # # Axis labels
+  #   xlab("log2 fold change") +
+  #   ylab("-log10 adjusted p-value") +
+  #   
+  #    #Highlight the most differential genes with uniprot id   
+  # geom_text_repel(data=label_pos,aes(label=uniprot_id),colour="black")+
+  # geom_text_repel(data=label_neg,aes(label=uniprot_id),colour="black")+
+  # 
+  # # Themes to influence legend and labels
+  #   theme(legend.position='right',plot.title = element_text(size = rel(1.5), hjust = 0.5),axis.title = element_text(size = rel(1.25)))+
+  #   theme_bw()
+  # 
+  
+  
+  #Prepare data for tree annotations
+  # Filter for different figure parts if required
+  data<-enrich_GO_data %>% #filter(figure_part==paste0(figu_part)) %>% 
+    # Create column for label that matches tree label
+    mutate(label=GO.ID) %>% 
+    # Create column that represents if logFC is positive or negative so data can be devided into left and right parts
+    mutate(Regulation = ifelse(logFC>0, "Positive", "Negative"))
+
+  #Checkpoint
+  assign("data_test", data, envir = .GlobalEnv)
+  
+  #info = annotation for tree
+  info<- data %>% dplyr::select(label,Ontology,Term,GO.ID,weightFisher, Significant, Manual_annotation) %>% mutate(GO_Term=paste(GO.ID, Term, sep=" "))
+  #Checkpoint
+  assign("info_test", info, envir = .GlobalEnv)
+
+  #Plot tree without annotations
+  tree<-ggtree(nexus_tree)+ layout_rectangular()#+ggplot2::xlim(c(0,-6,-6),c(200,6,6)) #xlim determines achis of all 3 pannels
+  #Checkpoint
+  assign("tree_test", tree, envir = .GlobalEnv)
+
+  #Add annotations to tree
+  tree_anno <- tree %<+% info+
+    geom_tippoint(aes(shape=Ontology),colour = "grey30")+
+    geom_tiplab(aes(label=GO_Term),offset = 0.2, size=3.0)+ xlim_tree(10) +# size changes font size while xlim changes x axis limits
+     scale_shape_discrete(name = "Gene ontology domains", labels = c("BP"="Biological Process", "CC"="Cellular Component", "MF"="Molecular Function"))
+  #Checkpoint
+  assign("tree_anno_test",  tree_anno, envir = .GlobalEnv)
+
+  
+  ##change this to only ona data for annotation and in the function you will tell which part you want with stage
+  #Prepare data to align to annotated tree
+  
+
+  data_neg<- data %>% 
+    dplyr::select(label,logFC,weightFisher, Significant,Manual_annotation)# %>%
+   # mutate(Neg_logFC=logFC) %>% 
+   # mutate(Count_neg=Significant) %>% 
+   # mutate(Manual_annotation_neg =Manual_annotation)%>% 
+   # dplyr::select(-Manual_annotation)
+   #Checkpoint
+  assign("data_neg_test",  data_neg, envir = .GlobalEnv)
+
+  # data_pos<- data %>% filter(Regulation=="Positive") %>%
+  #   dplyr::select(label,logFC,weightFisher,Significant,Manual_annotation) %>%
+  #   mutate(Pos_logFC=logFC)%>% 
+  #   mutate(Count_pos=Significant) %>% 
+  #   mutate(Manual_annotation_pos =Manual_annotation)%>% 
+  #   dplyr::select(-Manual_annotation)
+
+  data_combined<-data_neg %>% mutate(weightFisher_num=as.numeric(as.character(weightFisher))) 
+  #Checkpoint
+  assign("data_combined_Fig1",  data_combined, envir = .GlobalEnv)
+
+
+  # Matrix for heatmap that annotate boxplots manually
+  #Manually_annotated_GO<-enrich_GO_data %>% dplyr::select(GO.ID, Manual_annotation) %>% distinct( .keep_all = T)  %>%column_to_rownames("GO.ID")
+ #  assign("Manually_annotated_GO",  Manually_annotated_GO, envir = .GlobalEnv)
+  
+   
+  #  #Function to create achsis different for oral and aboral
+  # #https://coolbutuseless.github.io/2019/03/07/custom-axis-breaks-on-facetted-ggplot/
+  # breaks_fun <- function(x) {
+  # if (max(x) > 0) {
+  #     seq(0, 8, 1)
+  #   } else {
+  #     seq(-8 , 0, 1)
+  #    }
+  # }
+  # 
+  # #Function to create limits different for oral and aboral
+  # limit_fun <- function(x) {
+  # if (max(x) > 0) {
+  #     c(0, 8)
+  #   } else {
+  #      c((-8), 0)
+  #    }
+  # }
+
+  #Convert weightFisher to numeric
+  #data_combined$weightFisher<-as.numeric(as.character(data_combined$weightFisher))
+
+  #Define colours for fill gradient
+ # my_colours=c("#BEE0CC","#70C3D0","#419DC5","#316BA7","#223B89","#151E5E")
+ # my_colours=c("#151E5E","#223B89","#316BA7","#419DC5","#70C3D0","#BEE0CC")
+#my_colours=c("#BEE0CC","#70C3D0","#419DC5","#316BA7","#223B89","#151E5E")#blue
+my_colours=c("#808080","#9A9A9A","#B5B5B5","#D0D0D0","#EDEDED","#FFFFFF")#greys
+#my_colours2=c("green","#BEE0CC")
+
+  #Align data to annotated tree
+  # Manual annotation added
+tree_data_m<-  facet_plot(tree_anno ,panel = "neg", geom = geom_tile,
+  aes(x = 0, fill=Manual_annotation),data = data_combined) +# Colour of box background
+    scale_fill_manual(values=col_pal, name="Manual annotations",na.value="white")
+
+  # Adds number onto manual annotation
+# tree_data_mn<- facet_plot(tree_data_m,panel = "neg", data = data_combined, geom = geom_text,
+#             aes(x = 0, label = Count_neg))
+ 
+ # Adds new scale
+# tree_data_mns <- tree_data_mn #+ new_scale_fill()
+ 
+ #Adds boxplot left
+# tree_data_mnsb<- tree_data_mns +   geom_facet(panel = "Not competent", data = data_combined, geom =ggstance::geom_boxploth , #alternative geom_violinh
+#              aes(x = Neg_logFC, group = label,fill=weightFisher_num), width = .6) +
+ #             geom_facet(panel = "Competent", data = data_combined, geom = ggstance::geom_boxploth,
+ #             aes(x = Pos_logFC, group = label,fill=weightFisher_num), width = .6)+
+ #             theme_tree2()+
+            # scale_x_continuous(breaks = breaks_fun,limits = limit_fun)
+ #            scale_fill_gradientn(colours=my_colours,name="weightFisher")
+
+# tree_data_mnsbs <- tree_data_mnsb + new_scale_fill()
+ 
+# tree_data_mnsbsm<-  facet_plot(tree_data_mnsbs ,panel = "pos", geom = geom_tile,
+#    aes(x = 0,fill=Manual_annotation_pos),data = data_combined,show.legend = FALSE) +# show.legend = FALSE removes legend since it is the same than the other
+#     scale_fill_manual(values=col_pal,name="Manual annotations competent",na.value="white")
+
+ 
+#tree_data_mnsbsmn<- facet_plot(tree_data_mnsbsm,panel = "pos", data = data_combined, geom = geom_text,
+#             aes(x = 0, label = Count_pos))
+#tree_data_mnsbsmn<-facet_labeller(tree_data_mnsbsmn, c(Tree = "Enriched Gene ontology terms"))
+
+
+
+#was deleted before
+# #tree_data_anno<-gheatmap(tree_data_new_scale, Manually_annotated_GO, offset=8, width=0.5, font.size=3,
+# #        colnames_angle=-45, hjust=0) +
+# #
+# #tree_data_mnsbsmn
+# 
+# 
+
+
+# gt = ggplot_gtable(ggplot_build(tree_data_mnsbsmn))
+#  assign("gt_check",  gt , envir = .GlobalEnv)
+# 
+# gt$widths[7] = 0.1*gt$widths[7] # in this case it was colmun 7 - reduce the width by a half
+# gt$widths[13] = 0.1*gt$widths[13] # in this case it was colmun 7 - reduce the width by a half
+# gt$widths[9] = 0.3*gt$widths[9] # in this case it was colmun 7 - reduce the width by a half
+# gt$widths[11] = 0.3*gt$widths[11] # in this case it was colmun 7 - reduce the width by a half
+
+
+# 
+# #png(file=paste0(saving_path,file_name,".png"),width = 20, height = 29, units = "cm", res = 300)
+# #grid.newpage()
+# #grid.draw(gt)
+# #assign("gt",  gt, envir = .GlobalEnv)
+# #ggsave(paste0(saving_path,file_name,".png"),width = 20, height = 28, units = "cm")
+# 
+# 
+# 
+
+#save with volcanoplot
+# together<-volcano_plot/gt+
+#   plot_layout(ncol=1,nrow = 2,
+#               heights=c(1,2))+
+#   plot_annotation(tag_levels = 'A')
+
+# tree_data_mnsb
+ 
+ 
+ # Save plot in environment, so it can be stitched to pther plots via cowplot 
+ assign("data_neg_test",  tree_data_m, envir = .GlobalEnv)
+
+ggsave(paste0(saving_path,file_name,".png"), tree_data_m,
+       width = 20,
+       height = 28,
+       units =  "cm")
+dev.off()
+}
+```
+
+```{r}
+create_similarity_arranged_boxplot_sep(Data_figure_CM7_vs_CM3_pos,
+                                        nexus_tree=tree_CM7_vs_CM3_pos, 
+                                        saving_path="03_TopGO_Output/v2/Boxplots/", 
+                                        file_name="Boxplot_CM7_vs_CM3_volcano_v2_pos",
+                                        top_table_pos=top_table_CM_pos, 
+                                        top_table_neg=top_table_CM_neg,
+                                        label_positive="CM7", 
+                                        label_negative="CM3",
+                                        col_pal = col_pal_CM
+                            
+                                        )
+```
+Run function for separate figure
+```{r}
+create_similarity_arranged_boxplot_red<-function(enrich_GO_data, nexus_tree, saving_path, file_name, col_pal ){
+  
+  
+  #Prepare data for tree annotations
+  # Filter for different figure parts if required
+  data<-enrich_GO_data %>% 
+    # Create column for label that matches tree label
+    mutate(label=GO.ID) %>% 
+    # Create column that represents if logFC is positive or negative so data can be devided into left and right parts
+    mutate(Regulation = ifelse(logFC>0, "Positive", "Negative"))
+
+  #Checkpoint
+  assign("data_test", data, envir = .GlobalEnv)
+  
+  #info = annotation for tree
+  info<- data %>% dplyr::select(label,Ontology,Term,GO.ID,weightFisher, Significant, Manual_annotation) %>% mutate(GO_Term=paste(GO.ID, Term, sep=" "))
+  #Checkpoint
+  assign("info_test", info, envir = .GlobalEnv)
+
+  #Plot tree without annotations
+  tree<-ggtree(nexus_tree)+ layout_rectangular()#+ggplot2::xlim(c(0,-6,-6),c(200,6,6)) #xlim determines achis of all 3 pannels
+  #Checkpoint
+  assign("tree_test", tree, envir = .GlobalEnv)
+
+  #Add annotations to tree
+  tree_anno <- tree %<+% info+
+    geom_tippoint(aes(shape=Ontology),colour = "grey30")+
+    geom_tiplab(aes(label=GO_Term),offset = 0.2, size=3.0)+ xlim_tree(10) +# size changes font size while xlim changes x axis limits
+     scale_shape_discrete(name = "Gene ontology domains", labels = c("BP"="Biological Process", "CC"="Cellular Component", "MF"="Molecular Function"))+
+    theme(axis.text.x=element_blank() # Removes phylogenetic tree label
+          )
+    
+    
+    
+  #Checkpoint
+  assign("tree_anno_test",  tree_anno, envir = .GlobalEnv)
+
+  
+  
+  # #Prepare data to align to annotated tree
+
+
+  data_box<- data %>% dplyr::select(label,logFC,weightFisher, Significant,Manual_annotation)# %>%
+   # mutate(Neg_logFC=logFC) %>%
+   # mutate(Count_neg=Significant) %>%
+   # mutate(Manual_annotation_neg =Manual_annotation)%>%
+   # dplyr::select(-Manual_annotation)
+   #Checkpoint
+  assign("data_box_test",  data_box, envir = .GlobalEnv)
+
+  # # data_pos<- data %>% filter(Regulation=="Positive") %>%
+  # #   dplyr::select(label,logFC,weightFisher,Significant,Manual_annotation) %>%
+  # #   mutate(Pos_logFC=logFC)%>% 
+  # #   mutate(Count_pos=Significant) %>% 
+  # #   mutate(Manual_annotation_pos =Manual_annotation)%>% 
+  # #   dplyr::select(-Manual_annotation)
+  # 
+  data_combined<-data_box %>% mutate(weightFisher_num=as.numeric(as.character(weightFisher))) 
+  # #Checkpoint
+   assign("data_combined_Fig1",  data_combined, envir = .GlobalEnv)
+
+
+  # Matrix for heatmap that annotate boxplots manually
+  #Manually_annotated_GO<-enrich_GO_data %>% dplyr::select(GO.ID, Manual_annotation) %>% distinct( .keep_all = T)  %>%column_to_rownames("GO.ID")
+ #  assign("Manually_annotated_GO",  Manually_annotated_GO, envir = .GlobalEnv)
+  
+   
+  #  #Function to create achsis different for oral and aboral
+  # #https://coolbutuseless.github.io/2019/03/07/custom-axis-breaks-on-facetted-ggplot/
+  breaks_fun <- function(x) {
+  if (max(x) > 0) {
+      seq(0, 8, 1)
+    } else {
+      seq(-8 , 0, 1)
+     }
+  }
+
+  #Function to create limits different for oral and aboral
+  limit_fun <- function(x) {
+  if (max(x) > 0) {
+      c(0, 8)
+    } else {
+       c((-8), 0)
+     }
+  }
+
+  #Convert weightFisher to numeric
+  #data_combined$weightFisher<-as.numeric(as.character(data_combined$weightFisher))
+
+  #Define colours for fill gradient
+ # my_colours=c("#BEE0CC","#70C3D0","#419DC5","#316BA7","#223B89","#151E5E")
+ # my_colours=c("#151E5E","#223B89","#316BA7","#419DC5","#70C3D0","#BEE0CC")
+#my_colours=c("#BEE0CC","#70C3D0","#419DC5","#316BA7","#223B89","#151E5E")#blue
+my_colours=c("#808080","#9A9A9A","#B5B5B5","#D0D0D0","#EDEDED","#FFFFFF")#greys
+#my_colours2=c("green","#BEE0CC")
+
+#Adds boxplot 
+tree_b<-   tree_anno  +   geom_facet(panel = "Not competent", data = data_combined, geom =ggstance::geom_boxploth , #alternative geom_violinh
+             mapping = aes(x = logFC, group = label,fill=weightFisher_num), width = .6) +
+ #             geom_facet(panel = "Competent", data = data_combined, geom = ggstance::geom_boxploth,
+ #             aes(x = Pos_logFC, group = label,fill=weightFisher_num), width = .6)+
+ #            theme_tree2()+
+            scale_x_continuous(breaks = breaks_fun,limits = limit_fun)
+             scale_fill_gradientn(colours=my_colours,name="weightFisher")
+
+ # Adds new scale
+# tree_bs<- tree_b + new_scale_fill()
+             
+  #Align data to annotated tree
+  # Manual annotation added
+# tree_bsm<-  facet_plot(tree_bs ,panel = "N",data = data_combined, geom = geom_tile,
+#  mapping = aes(x = 0, fill=data_combined$Manual_annotation)) +# Colour of box background
+#  scale_fill_manual(values=col_pal, name="Manual annotations",na.value="white")
+
+  # Adds number onto manual annotation
+#  tree_bsmn<- facet_plot(tree_bsm,panel = "N", data = data_combined, geom = geom_text, mapping =  aes(x = 0, label = data_combined$Significant))
+ 
+
+ 
+ 
+
+# tree_data_mnsbs <- tree_data_mnsb + new_scale_fill()
+ 
+# tree_data_mnsbsm<-  facet_plot(tree_data_mnsbs ,panel = "pos", geom = geom_tile,
+#    aes(x = 0,fill=Manual_annotation_pos),data = data_combined,show.legend = FALSE) +# show.legend = FALSE removes legend since it is the same than the other
+#     scale_fill_manual(values=col_pal,name="Manual annotations competent",na.value="white")
+
+ 
+#tree_data_mnsbsmn<- facet_plot(tree_data_mnsbsm,panel = "pos", data = data_combined, geom = geom_text,
+#             aes(x = 0, label = Count_pos))
+#tree_data_mnsbsmn<-facet_labeller(tree_data_mnsbsmn, c(Tree = "Enriched Gene ontology terms"))
+
+
+
+#was deleted before
+# #tree_data_anno<-gheatmap(tree_data_new_scale, Manually_annotated_GO, offset=8, width=0.5, font.size=3,
+# #        colnames_angle=-45, hjust=0) +
+# #
+# #tree_data_mnsbsmn
+# 
+# 
+
+
+# gt = ggplot_gtable(ggplot_build(tree_data_mnsbsmn))
+#  assign("gt_check",  gt , envir = .GlobalEnv)
+# 
+# gt$widths[7] = 0.1*gt$widths[7] # in this case it was colmun 7 - reduce the width by a half
+# gt$widths[13] = 0.1*gt$widths[13] # in this case it was colmun 7 - reduce the width by a half
+# gt$widths[9] = 0.3*gt$widths[9] # in this case it was colmun 7 - reduce the width by a half
+# gt$widths[11] = 0.3*gt$widths[11] # in this case it was colmun 7 - reduce the width by a half
+
+
+# 
+# #png(file=paste0(saving_path,file_name,".png"),width = 20, height = 29, units = "cm", res = 300)
+# #grid.newpage()
+# #grid.draw(gt)
+# #assign("gt",  gt, envir = .GlobalEnv)
+# #ggsave(paste0(saving_path,file_name,".png"),width = 20, height = 28, units = "cm")
+# 
+# 
+# 
+
+#save with volcanoplot
+# together<-volcano_plot/gt+
+#   plot_layout(ncol=1,nrow = 2,
+#               heights=c(1,2))+
+#   plot_annotation(tag_levels = 'A')
+
+# tree_data_mnsb
+ 
+ 
+ # Save plot in environment, so it can be stitched to pther plots via cowplot 
+ #assign("data_neg_test",     tree_bsm, envir = .GlobalEnv)
+ tree_b
+ggsave(paste0(saving_path,file_name,".png"),
+       width = 20,
+       height = 28,
+       units =  "cm")
+#dev.off()
+}
+```
+
+```{r}
+
+create_similarity_arranged_boxplot_red(Data_figure_CM7_vs_CM3_pos,
+                                        nexus_tree=tree_CM7_vs_CM3_pos, 
+                                        saving_path="03_TopGO_Output/v2/Boxplots/", 
+                                        file_name="Boxplot_CM7_vs_CM3_v2_pos",
+                                        col_pal = col_pal_CM
+                          
+                                        )
+
+```
+
+```{r}
+names(data_combined_Fig1)
+```
+
+```{r}
+create_similarity_arranged_boxplot_split<-function(enrich_GO_data, nexus_tree, saving_path, file_name, col_pal, panel_name){
+  
+  # Colour for manuall annotations
+  col_pal <- col_pal
+  
+  
+  #Prepare data for tree annotations
+  # Filter for different figure parts if required
+  data<-enrich_GO_data %>% #filter(figure_part==paste0(figu_part)) %>% 
+    # Create column for label that matches tree label
+    mutate(label=GO.ID) %>% 
+    # Create column that represents if logFC is positive or negative so data can be divided into left and right parts
+    mutate(Regulation = ifelse(logFC>0, "Positive", "Negative"))
+
+  #Checkpoint
+  #assign("data_test", data, envir = .GlobalEnv)
+  
+  #info = annotation for tree
+  info<- data %>% dplyr::select(label,Ontology,Term,Term_number,GO.ID,weightFisher, Significant, Manual_annotation) %>% mutate(GO_Term=paste(GO.ID, Term, sep=" ")) %>% unique()
+  #Checkpoint
+  assign("info_test", info, envir = .GlobalEnv)
+
+  #Plot tree without annotations
+  tree<-ggtree(nexus_tree)+ layout_rectangular()#+ggplot2::xlim(c(0,-6,-6),c(200,6,6)) #xlim determines achis of all 3 pannels
+  #Checkpoint
+  #assign("tree_test", tree, envir = .GlobalEnv)
+
+  #Add annotations to tree
+  tree_anno <- tree %<+% info+
+    geom_tippoint(aes(shape=Ontology),colour = "grey30")+
+    geom_tiplab(aes(label=label),offset = 0.2, size=3.0)+ xlim_tree(10) +# size changes font size while xlim changes x axis limits
+     scale_shape_discrete(name = "Gene ontology domains", labels = c("BP"="Biological Process", "CC"="Cellular Component", "MF"="Molecular Function"))
+  #Checkpoint
+  assign("tree_anno_test",  tree_anno, envir = .GlobalEnv)
+
+  d1 <- data.frame(label=tree_anno$data$label) %>% drop_na()
+
+    #Checkpoint
+  assign("d1",  d1, envir = .GlobalEnv)
+  
+  #Prepare data to align to annotated tree
+  data_neg<- data %>% filter(Regulation=="Negative") %>%
+    dplyr::select(label,logFC,weightFisher, Significant,Manual_annotation) #%>%
+   # mutate(Neg_logFC=logFC) %>% 
+  #  mutate(Count_neg=Significant) %>% 
+   # mutate(Manual_annotation_neg =Manual_annotation)%>% 
+   # dplyr::select(-Manual_annotation)
+   #Checkpoint
+ # assign("data_neg_test",  data_neg, envir = .GlobalEnv)
+
+  
+  
+  data_pos<- data %>% filter(Regulation=="Positive") %>%
+    dplyr::select(label,logFC,weightFisher,Significant,Manual_annotation) #%>%
+   # mutate(Pos_logFC=logFC)%>% 
+   # mutate(Count_pos=Significant) %>% 
+   # mutate(Manual_annotation_pos =Manual_annotation)%>% 
+   # dplyr::select(-Manual_annotation)
+
+  data_combined<-rbind(data_neg,data_pos)%>% mutate(weightFisher_num=as.numeric(as.character(weightFisher))) %>% unique()#
+  data_combined<-  d1 %>% left_join(data_combined, by=)
+  #Checkpoint
+  assign("data_combined_Fig1",  data_combined, envir = .GlobalEnv)
+
+
+  # Matrix for heatmap that annotate boxplots manually
+  #Manually_annotated_GO<-enrich_GO_data %>% dplyr::select(GO.ID, Manual_annotation) %>% distinct( .keep_all = T)  %>%column_to_rownames("GO.ID")
+ #  assign("Manually_annotated_GO",  Manually_annotated_GO, envir = .GlobalEnv)
+  
+   
+   #Function to create achsis different for oral and aboral
+  #https://coolbutuseless.github.io/2019/03/07/custom-axis-breaks-on-facetted-ggplot/
+  breaks_fun <- function(x) {
+  if (max(x) > 0) {
+      seq(0, 8, 1)
+    } else {
+      seq(-8 , 0, 1)
+     }
+  }
+
+  #Function to create limits different for oral and aboral
+  limit_fun <- function(x) {
+  if (max(x) > 0) {
+      c(0, 8)
+    } else {
+       c((-8), 0)
+     }
+  }
+
+  #Convert weightFisher to numeric
+  #data_combined$weightFisher<-as.numeric(as.character(data_combined$weightFisher))
+
+  #Define colours for fill gradient
+#my_colours=c("#BEE0CC","#70C3D0","#419DC5","#316BA7","#223B89","#151E5E")#blue
+my_colours=c("#808080","#9A9A9A","#B5B5B5","#D0D0D0","#EDEDED","#FFFFFF")#greys
+#my_colours2=c("green","#BEE0CC")
+
+
+
+
+  #Align data to annotated tree
+  # Manual annotation added
+
+      #  p2 <- facet_plot(p, panel="dot", data=d1, geom=geom_point, aes(x=val), color='red3')
+tree_data_m<-  facet_plot(tree_anno ,panel = "Manual_annotation", geom = geom_tile,
+                          aes(x = 0, fill=info$Manual_annotation),data = info)+
+                            scale_fill_manual(values=col_pal, name="Manual annotations",na.value="white")
+
+
+
+
+
+
+
+  # Adds number onto manual annotation
+#tree_data_mn<- facet_plot(tree_data_m,
+#                         panel = "N", 
+#                         data = data_pos, 
+#                         geom = geom_text,
+#                        mapping=aes(x =0,label= data_pos$Significant))
+
+ 
+ # Adds new scale
+# tree_data_ms <- tree_data_m + new_scale_fill()
+ 
+ #Adds boxplot left
+#  tree_data_msb<-  tree_data_ms +   geom_facet(panel = "Not competent", data = data_combined, geom =ggstance::geom_boxploth , #alternative geom_violinh
+#              aes(x = logFC, group = label,fill=weightFisher_num), width = .6) +
+             
+#              theme_tree2()+
+#             scale_x_continuous(breaks = breaks_fun,limits = limit_fun)
+ #            scale_fill_gradientn(colours=my_colours,name="weightFisher")
+
+             
+ # removed columns            
+             
+#  tree_data_mnsbs <- tree_data_mnsb + new_scale_fill()
+#  
+#  tree_data_mnsbsm<-  facet_plot(tree_data_mnsbs ,panel = "pos", geom = geom_tile,
+#     aes(x = 0,fill=Manual_annotation),data = data_combined,show.legend = FALSE) +# show.legend = FALSE removes legend since it is the same than the other
+#      scale_fill_manual(values=col_pal,name="Manual annotations competent",na.value="white")
+# 
+#  
+# tree_data_mnsbsmn<- facet_plot(tree_data_mnsbsm,panel = "pos", data = data_combined, geom = geom_text,
+#              aes(x = 0, label = Significant))
+             
+             
+             
+tree_data_m<-facet_labeller(tree_data_m, c(Tree = "Enriched Gene ontology terms"))
+# #tree_data_anno<-gheatmap(tree_data_new_scale, Manually_annotated_GO, offset=8, width=0.5, font.size=3,
+# #        colnames_angle=-45, hjust=0) +
+# #
+# #tree_data_mnsbsmn
+# 
+# 
+
+
+
+
+# gt = ggplot_gtable(ggplot_build(tree_data_mnsbsmn))
+#  assign("gt_check",  gt , envir = .GlobalEnv)
+# 
+# gt$widths[7] = 0.1*gt$widths[7] # in this case it was colmun 7 - reduce the width by a half
+# gt$widths[13] = 0.1*gt$widths[13] # in this case it was colmun 7 - reduce the width by a half
+# gt$widths[9] = 0.3*gt$widths[9] # in this case it was colmun 7 - reduce the width by a half
+# gt$widths[11] = 0.3*gt$widths[11] # in this case it was colmun 7 - reduce the width by a half
+# # 
+
+
+
+
+
+# #png(file=paste0(saving_path,file_name,".png"),width = 20, height = 29, units = "cm", res = 300)
+# #grid.newpage()
+# #grid.draw(gt)
+# #assign("gt",  gt, envir = .GlobalEnv)
+# #ggsave(paste0(saving_path,file_name,".png"),width = 20, height = 28, units = "cm")
+# 
+
+# together<-gt+
+#   plot_layout(ncol=1,nrow = 2,
+#               heights=c(1,2))+
+#   plot_annotation(tag_levels = 'A')
+
+
+
+ggsave(paste0(saving_path,file_name,".png"), tree_data_m,
+       width = 20,
+       height = 28,
+       units =  "cm")
+
+}
+```
+
+
+```{r}
+str(data_combined_Fig1)
+```
+
+```{r}
+tree_anno_test$labels$label
+
+```
+
+
+```{r}
+create_similarity_arranged_boxplot_split(Data_figure_LM7_vs_LM3,
+                                        nexus_tree=tree_LM7_vs_LM3, 
+                                        saving_path="03_TopGO_Output/v2/Boxplots/", 
+                                        file_name="Boxplot_LM7_vs_LM3_volcano_v2_new2",
+                                        col_pal = col_pal_LM
+                                        )
+```
+```{r}
+create_similarity_arranged_boxplot_split(Data_figure_LM7_vs_LM3_pos,
+                                        nexus_tree=tree_LM7_vs_LM3_pos, 
+                                        saving_path="03_TopGO_Output/v2/Boxplots/", 
+                                        file_name="Boxplot_LM7_vs_LM3_volcano_v2_pos_new3",
+                                        col_pal = col_pal_LM
+                                        )
+```
+
+```{r}
+create_similarity_arranged_boxplot_split(Data_figure_LM7_vs_LM3_neg,
+                                        nexus_tree=tree_LM7_vs_LM3_neg, 
+                                        saving_path="03_TopGO_Output/v2/Boxplots/", 
+                                        file_name="Boxplot_LM7_vs_LM3_volcano_v2_neg_new3",
+                                        col_pal = col_pal_LM
+                                        )
+```
+
+
+```{r}
+tree_LM7_vs_LM3_neg$tip.label
+```
+
+
+```{r}
+# Generate a random tree with 30 tips
+tree <- rtree(30)
+
+# Make the original plot
+p <- ggtree(tree)
+
+# generate some random values for each tip label in the data
+d1 <- data.frame(id=tree$tip.label, val=rnorm(30, sd=3))
+
+
+# Make a second plot with the original, naming the new plot "dot", 
+# using the data you just created, with a point geom.
+p2 <- facet_plot(p, panel="dot", data=d1, geom=geom_point, aes(x=val), color='red3')
+
+# Make some more data with another random value.
+d2 <- data.frame(id=tree$tip.label, value = abs(rnorm(30, mean=100, sd=50)))
+
+# Now add to that second plot, this time using the new d2 data above, 
+# This time showing a bar segment, size 3, colored blue.
+p3 <- facet_plot(p2, panel='bar', data=d2, geom=geom_segment, 
+           aes(x=0, xend=value, y=y, yend=y), size=3, color='blue4') 
+
+# Show all three plots with a scale
+p3 + theme_tree2()
+```
+
+```{r}
+tree2$data
+
+```
+
+
+
+```{r}
+library(ggtree)
+set.seed(2016-10-31)
+tr =rtree(50)
+tr$tip.label = paste(tr$tip.label, tr$tip.label, sep="_")
+p <- ggtree(tr) + geom_tiplab(align=TRUE) + theme_tree2()
+d = data.frame(id = tr$tip.label, v= rnorm(50))
+
+facet_plot(p, geom=geom_point, data=d, mapping=aes(x=v), panel='dot') + 
+		ggtitle("truncated tip labels")
+```
+
+```{r}
+facet_plot(p+xlim(NA, 6), geom=geom_point, data=d, mapping=aes(x=v), panel='dot') + 
+		ggtitle("xlim applies to all panels")
+```
+
+```{r}
+facet_plot(p+xlim_tree(6), geom=geom_point, data=d, mapping=aes(x=v), panel='dot') + 
+		ggtitle('*xlim_tree* only change x axis limits of *Tree* panel')
+
+# or using:
+# facet_plot(p, geom=geom_point, data=d, mapping=aes(x=v), panel='dot') + xlim_tree(6)
+```
+
+
+
+Improvements
+-split legend according to sample
+https://statisticsglobe.com/divide-legend-of-ggplot2-plot-in-r

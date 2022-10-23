@@ -1,0 +1,629 @@
+---
+title: "Untitled"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+library(tidyverse)
+```
+
+
+```{r}
+library(tidyverse)
+library(stringr)
+library(ggplot2)
+library(dplyr)
+library(recluster)
+library(phytools)
+library(maps)
+library(stats)
+library(cluster)
+library(tidyverse)
+library(dplyr)
+library(readr)
+library(vegan)
+#library(ComplexHeatmap)
+library(ape)
+library(ggtree)
+library(treeio)
+library(tidytree)
+library(ggtree)
+library(ggstance)
+library(ggnewscale)
+library(grid) #change width of panel
+library(gtable) #change width of panel
+library(ggplotify)
+```
+
+Aim:
+
+My plan is to use the TopGO enrichment that were conducted for each larval part and plot them oral next to aboral.
+
+For figures see 10_Upset_ORA_2021_04_19.Rmd
+Also check out 11_Upset_boxplot.Rmd
+
+I'm amining for 2 plots:
+Figure 1
+1. What is different oral vs aboral?
+  With facet wrap Oral vs aboral:
+    - non-induced neg (0001) and pos (0100)
+    - non-induced and induced neg(0011) and pos (1100)
+    - induced neg (0010) and pos (1000)
+
+Figure 2
+2. What gets up and downregulated after settlement induction?
+  With facet wrap Oral vs Aboral:
+    - upregulated both oral and aboral (1100)
+    - upregulated only aboral (1000) only oral (0100)
+    - downregulated both oral and aboral (0011)
+    - downregulated only aboral (0010) only oral (0001)
+
+
+# Set paths
+If working from Laptop run:
+```{r}
+path<-"D:/Dropbox/PhD JCU/"
+```
+
+If working from JCU desktop run:
+```{r}
+path<-"C:/Users/jc447193/Dropbox/PhD JCU/"
+```
+
+
+#1. Load results of all intersections
+
+## A. Oral vs aboral
+```{r}
+oral_Aboral_neg<-read.csv("TopGO_Output/01_oral_vs_aboral/TopGO_oral_vs_aboral_neg.csv", header = T)
+Oral_aboral_pos<-read.csv("TopGO_Output/01_oral_vs_aboral/TopGO_oral_vs_aboral_pos.csv", header = T)
+```
+## B. Up vs down (induced vs non-induced)
+```{r}
+# tbl_up_down_fig2 <-
+#     list.files(path = paste0(path, "Chapter2_Gene expression/A.mil_oral_aboral_rnaseq/04_Functional_analysis/04_4_TopGO/TopGO_Output/Upset_up_down"),
+#                pattern = "TopGO_[0-1][0-1][0-1][0-1].csv", 
+#                full.names = T) %>% 
+#     map_df(~read_csv(., col_types = cols(.default = "c"))) 
+```
+
+
+Load results from limma
+```{r}
+load(paste0(path,"Chapter2_Gene expression/A.mil_oral_aboral_rnaseq/03_Differential_gene_expression_analysis/Output/Complete_toptable/A.mil_oralaboral_Toptable_limma_trend_all_contrasts.RData"))
+```
+
+# 2. Upset_boxplot preparation
+
+Defines function to prepare TopGO results into boxplot
+```{r}
+preparation_boxplot<-function(set, larvae_part, figure_part,limma_table){
+prep<- set %>% mutate(larvae_part=paste0(larvae_part)) %>% mutate(figure_part=paste0(figure_part)) 
+limma_table_2<-limma_table %>%  mutate(id_number = str_replace(amil_id, "amil.", "")) %>% mutate(gene_id=paste(id_number,".m1",sep=""))
+prep<-prep %>% left_join(limma_table_2) %>% mutate(Regulation = ifelse(logFC>0, "Positive", "Negative")) 
+}
+```
+
+
+```{r}
+Fig_oral<-preparation_boxplot(Oral_aboral_pos, larvae_part = "Oral", figure_part = "competent_larvae", table_oral_vs_aboral)
+```
+```{r}
+Fig_aboral<-preparation_boxplot(oral_Aboral_neg, larvae_part = "Aboral",figure_part = "competent_larvae", table_oral_vs_aboral)
+```
+
+combine results
+```{r}
+#Data_figure_oral_vs_aboral<- rbind(Fig_aboral,
+#                                   Fig_oral
+ #                        )
+#write.csv(Data_figure_oral_vs_aboral,"TopGO_Output/01_oral_vs_aboral/TopGO_figure/Data_figure_oral_vs_aboral.csv", row.names = FALSE)
+#Data_figure_oral_vs_aboral<-read.csv("TopGO_Output/01_oral_vs_aboral/TopGO_figure/Data_figure_oral_vs_aboral2.csv")
+Data_figure_oral_vs_aboral<-read.csv("TopGO_Output/01_oral_vs_aboral/TopGO_figure/Data_figure_oral_vs_aboral2_duprm.csv") %>% filter(weightFisher<0.05)
+```
+
+```{r}
+str(Data_figure_oral_vs_aboral)
+```
+
+
+```{r}
+#Data_figure_oral_vs_aboral$larvae_part<-factor(Data_figure_oral_vs_aboral$larvae_part, levels = c("aboral", "oral"))
+```
+
+
+```{r}
+#Data_figure_oral_vs_aboral$figure_part<-factor(Data_figure_oral_vs_aboral$figure_part,levels = c("competent_larvae"))
+```
+
+## Separation to get separate plots for oral and aboral
+
+```{r}
+aboral_fig <- Data_figure_oral_vs_aboral %>% filter(larvae_part=="Aboral") %>% dplyr::rename(Manual_annotation =  Manual_annotation_aboral)
+```
+
+```{r}
+oral_fig <- Data_figure_oral_vs_aboral %>% filter(larvae_part=="Oral")%>% dplyr::rename(Manual_annotation =  Manual_annotation_oral)
+```
+
+# 2. Create distance matrix and tree in function
+Reference: https://ourcodingclub.github.io/tutorials/data-clustering/
+From file: 12_Upset_boxplot_arranged_by_similarity_2021_05_14.Rmd
+```{r}
+create_distance_matrix<-function(figure_data,fig_part, saving_path, file_name){
+  # filter for data of specific figure part like both upregulated
+  GOxgene_id<-figure_data %>% filter(figure_part==paste0(fig_part)) %>% 
+    # select only columns of GO id and gene_id
+    dplyr::select(GO.ID,gene_id) 
+  
+  # Use GO ID and gene ID to create matrix row and colums
+  GO_sub <- unique(GOxgene_id$GO.ID)  # Making a vector with GO ids 
+  gene_sub <- unique(GOxgene_id$gene_id)  # Making a vector with gene_ids
+  
+  # First we'll create an empty matrix with our sites in the rows and our genes in the columns. The       loop function will place a `1` on a given cell when the gene is present in an GO GO.ID and will       fill out the remaining cells with a `0`.
+
+  commat <- matrix(0, length(GO_sub), length(gene_sub))
+    for (i in 1:nrow(commat)){
+    temp <- GOxgene_id[which(GOxgene_id$GO.ID== GO_sub[i]),]
+    commat[i, which(gene_sub%in%temp$gene_id)] <- 1
+    #print(i)
+  }
+
+  # Now let's name our rows and columns with the codes for the sites and the codes for the genes.
+  rownames(commat) <- as.character(GOxgene_id$GO.ID[match(GO_sub, GOxgene_id$GO.ID)])
+  colnames(commat) <- as.character(GOxgene_id$gene_id[match(gene_sub, GOxgene_id$gene_id)])
+
+  # Calculate distances
+  # dist <- recluster.dist(commat, dist="jaccard") #if you have sparse matrix (many zeroes) the best    #  choice is to use Jaccard index                                           
+  #https://www.researchgate.net/post/How-to-choose-the-right-distance-method
+  #dist <- recluster.dist(commat, dist="simpson")
+  #dist <- recluster.dist(commat, dist="sorensen")
+  #dist <- vegdist(commat, method="euclidean")
+  
+  
+  clust <- recluster.cons(commat, tr = 1, p = 0.5, dist = "jaccard", method = "single")
+  clust2  <- clust$cons  # Selecting the consensus tree 
+  
+  #Plot tree
+  plot(clust2, direction = "downwards", cex = 0.5)
+
+  # the write.tree function will let you save your cluster in TRE format so you can open it with          Figtree and visualise it better.
+write.tree(clust2, file=paste0(saving_path,file_name,".tre"))
+writeNexus(clust2, file=paste0(saving_path,file_name,".nex"))
+#write.beast(clust2, file = paste0(saving_path, "/",file_name,".tree")) # I tried to save the tree in 
+#Nexus so I didn't have to open the file in figtree to convert it to nexus, but it was not sucessful
+
+}
+```
+
+```{r}
+create_distance_matrix(figure_data=Data_figure_oral_vs_aboral,fig_part="competent_larvae", saving_path="TopGO_Output/01_oral_vs_aboral/TopGO_figure/", file_name="TopGO_figure_oral_vs_aboral")
+```
+##separate
+
+```{r}
+create_distance_matrix(figure_data=aboral_fig ,fig_part="competent_larvae", saving_path="TopGO_Output/01_oral_vs_aboral/TopGO_figure/", file_name="TopGO_figure_aboral")
+```
+
+```{r}
+create_distance_matrix(figure_data=oral_fig,fig_part="competent_larvae", saving_path="TopGO_Output/01_oral_vs_aboral/TopGO_figure/", file_name="TopGO_figure_oral")
+```
+
+```{r}
+tree_oral_aboral<-read.nexus(file="TopGO_Output/01_oral_vs_aboral/TopGO_figure/TopGO_figure_oral_vs_aboral.nex", tree.names = NULL)
+```
+
+## separate
+
+
+
+```{r}
+tree_aboral<-read.nexus(file="TopGO_Output/01_oral_vs_aboral/TopGO_figure/TopGO_figure_aboral.nex", tree.names = NULL)
+```
+
+```{r}
+tree_oral<-read.nexus(file="TopGO_Output/01_oral_vs_aboral/TopGO_figure/TopGO_figure_oral.nex", tree.names = NULL)
+```
+
+#3 Manual creation of boxplot (optional) --> Useful to be able to write/understand function called create_similarity_arranged_boxplot
+##Plot tree without annotations
+```{r}
+p_tree_fig1<-ggtree(tree_oral_aboral)+ layout_rectangular()  #+ ggplot2::xlim(0, 60) #xlim influences spache for brach lengths
+#including xlim caused serious trouble
+p_tree_fig1
+```
+
+```{r}
+Data_figure_oral_vs_aboral$Manual_annotation_aboral %>% unique()
+```
+
+```{r}
+aboral_fig$Manual_annotation_aboral%>% unique()
+```
+```{r}
+oral_fig$Manual_annotation_oral%>% unique()
+```
+
+
+
+# 4. Function Upsetplot arranged by similarity
+
+```{r}
+create_similarity_arranged_boxplot_fig1<-function(enrich_GO_data, figu_part,nexus_tree, saving_path, file_name){
+  #Prepare data for tree annotations
+  data<-enrich_GO_data %>% filter(figure_part==paste0(figu_part)) %>% 
+    mutate(label=GO.ID) %>% 
+    mutate(Regulation = ifelse(logFC>0, "Positive", "Negative"))
+
+  #Checkpoint
+ # assign("data_test", data, envir = .GlobalEnv)
+  
+  #info = annotation for tree
+  info<- data %>% dplyr::select(label,Ontology,Term,GO.ID,weightFisher, Significant) %>% mutate(GO_Term=paste(GO.ID, Term, sep=" "))
+  #Checkpoint
+ # assign("info_test", info, envir = .GlobalEnv)
+
+  #Plot tree without annotations
+  tree<-ggtree(nexus_tree)+ layout_rectangular()#+ggplot2::xlim(c(0,-6,-6),c(200,6,6)) #xlim determines achis of all 3 pannels
+  #Checkpoint
+ # assign("tree_test", tree, envir = .GlobalEnv)
+
+  #Add annotations to tree
+  tree_anno <- tree %<+% info+
+    geom_tippoint(aes(shape=Ontology),colour = "grey30")+
+    geom_tiplab(aes(label=GO_Term),offset = 0.1, size=4.0)+ xlim_tree(6)+
+    scale_shape_discrete(name = "Gene ontology domains", labels = c("BP"="Biological Process", "CC"="Cellular Component", "MF"="Molecular Function"))
+  #Checkpoint
+ # assign("tree_anno_test",  tree_anno, envir = .GlobalEnv)
+
+  #Prepare data to align to annotated tree
+  data_aboral<- data %>% filter(Regulation=="Negative") %>%
+    dplyr::select(label,logFC,weightFisher, Significant,Manual_annotation_aboral) %>%
+    mutate(Neg_logFC=logFC) %>% 
+    mutate(Count_aboral=Significant) 
+   #Checkpoint
+  #assign("data_aboral_test",  data_aboral, envir = .GlobalEnv)
+
+  data_oral<- data %>% filter(Regulation=="Positive") %>%
+    dplyr::select(label,logFC,weightFisher,Significant,Manual_annotation_oral) %>%
+    mutate(Pos_logFC=logFC)%>% 
+    mutate(Count_oral=Significant)
+
+  data_combined<-full_join(data_aboral,data_oral) %>% mutate(weightFisher_num=as.numeric(as.character(weightFisher))) 
+  #Checkpoint
+ # assign("data_combined_Fig1",  data_combined, envir = .GlobalEnv)
+
+
+  # Matrix for heatmap that annotate boxplots manually
+  #Manually_annotated_GO<-enrich_GO_data %>% dplyr::select(GO.ID, Manual_annotation) %>% distinct( .keep_all = T)  %>%column_to_rownames("GO.ID")
+ #  assign("Manually_annotated_GO",  Manually_annotated_GO, envir = .GlobalEnv)
+  
+   
+   #Function to create achsis different for oral and aboral
+  #https://coolbutuseless.github.io/2019/03/07/custom-axis-breaks-on-facetted-ggplot/
+  breaks_fun <- function(x) {
+  if (max(x) > 0) {
+      seq(0, 6, 1)
+    } else {
+      seq(-6 , 0, 1)
+     }
+  }
+
+  #Function to create limits different for oral and aboral
+  limit_fun <- function(x) {
+  if (max(x) > 0) {
+      c(0, 6)
+    } else {
+       c((-6), 0)
+     }
+  }
+
+  #Convert weightFisher to numeric
+  #data_combined$weightFisher<-as.numeric(as.character(data_combined$weightFisher))
+
+  #Define colours for fill gradient
+
+my_colours=c("#808080","#9A9A9A","#B5B5B5","#D0D0D0","#EDEDED","#FFFFFF")#greys
+#my_colours2=c("green","#BEE0CC")
+
+
+
+col_pal<-c(
+  "Nervous system" = "#489FB5", #light blue
+  "Protein glycosylation" ="#0B3F5B", #dark blue
+  "Reactive oxygen species"="#3FB42D",        #light green
+  
+   "Tissue remodelling" ="#D77316", #orange
+   "Metabolism"="#6D224A", #purple
+  "Pattern recognition" ="#A33814"       #red
+
+)
+
+#489FB5 #light blue
+#0B3F5B #dark blue
+#6D224A OR #5D1D3F #purple
+#A33814 OR #913212 #red
+#D77316 OR #BA7611 OR #BB5B11 #orange
+#F5AF00 #yellow
+#3FB42D #light green
+#107F22 #green 
+
+
+
+
+  #Align data to annotated tree
+tree_data_m<-  facet_plot(tree_anno ,panel = "N", geom = geom_tile,
+  aes(x = 0, fill=Manual_annotation_aboral),  data = data_combined) +# , colour = "black"
+    scale_fill_manual(values=col_pal, 
+                     breaks = c("Nervous system", "Protein glycosylation", "Reactive oxygen species"), 
+                      name="Manual annotations aboral",
+                     na.value="white")
+tree_data_mn<- facet_plot(tree_data_m,panel = "N", data = data_combined, geom = geom_text,
+            aes(x = 0, label = Count_aboral))
+tree_data_mns <- tree_data_mn + new_scale_fill()
+tree_data_mnsb<- tree_data_mns +   geom_facet(panel = "Aboral", data = data_combined, geom =ggstance::geom_boxploth , #alternative geom_violinh
+              aes(x = Neg_logFC, group = label,fill=weightFisher_num), width = .6) +
+              geom_facet(panel = "Oral", data = data_combined, geom = ggstance::geom_boxploth,
+              aes(x = Pos_logFC, group = label,fill=weightFisher_num), width = .6)+
+              theme_tree2()+
+            # scale_x_continuous(breaks = breaks_fun,limits = limit_fun)
+             scale_fill_gradientn(colours=my_colours,name="Significance\nGO enrichment")
+
+tree_data_mnsbs <- tree_data_mnsb + new_scale_fill()
+
+tree_data_mnsbsm<-  facet_plot(tree_data_mnsbs ,panel = "N ", geom = geom_tile,
+   aes(x = 0, fill=Manual_annotation_oral),  data = data_combined) +# , colour = "black"
+     scale_fill_manual(values=col_pal, 
+                       breaks = c("Tissue remodelling","Metabolism","Pattern recognition"),
+                       name="Manual annotations oral",
+                       na.value="white")
+tree_data_mnsbsmn<- facet_plot(tree_data_mnsbsm,panel = "N ", data = data_combined, geom = geom_text,
+             aes(x = 0, label = Count_oral))+
+   theme(legend.position="none")
+
+
+
+
+#tree_data_anno<-gheatmap(tree_data_new_scale, Manually_annotated_GO, offset=8, width=0.5, font.size=3, 
+#        colnames_angle=-45, hjust=0) +
+#    
+tree_data_mnsbsmn<-facet_labeller(tree_data_mnsbsmn, c(Tree = paste0("Enriched Gene Ontology terms")))
+
+ 
+ 
+#change withs of columns
+gt = ggplot_gtable(ggplot_build(tree_data_mnsbsmn))
+assign("gt_check",  gt , envir = .GlobalEnv)
+
+gt$widths[7] = 0.09*gt$widths[7] # in this case it was colmun 7 - reduce the width by a half
+gt$widths[13] = 0.09*gt$widths[13] # in this case it was colmun 7 - reduce the width by a half
+gt$widths[9] = 0.2*gt$widths[9] # in this case it was colmun 7 - reduce the width by a half
+gt$widths[11] = 0.2*gt$widths[11] # in this case it was colmun 7 - reduce the width by a half
+
+ggsave(paste0(saving_path,file_name,".png"), gt,
+       width = 20,
+       height = 29,
+       units =  "cm")
+dev.off()
+
+}
+```
+
+
+```{r}
+create_similarity_arranged_boxplot_fig1(Data_figure_oral_vs_aboral, figu_part="competent_larvae",nexus_tree=tree_oral_aboral, saving_path="TopGO_Output/01_oral_vs_aboral/TopGO_figure/", file_name="Boxplot_oral_vs_aboral")
+```
+##separate
+
+use the same function than for figre 2!!!!
+
+##Upregulated plot function
+
+```{r}
+create_similarity_arranged_boxplot_fig1_separate<-function(enrich_GO_data, larval_part,nexus_tree, saving_path, file_name,  tree_label,plot_height){
+  
+  # Colour for manuall annotations
+ col_pal<-c(
+  "Nervous system" = "#489FB5", #light blue
+  "Protein glycosylation" ="#0B3F5B", #dark blue
+  "Reactive oxygen species"="#3FB42D",        #light green
+  
+   "Tissue remodelling" ="#D77316", #orange
+   "Metabolism"="#6D224A", #purple
+  "Pattern recognition" ="#A33814"       #red
+
+)
+  #Prepare data for tree annotations by filtering only one figure part e.g. up --> this should be already influenced by tree
+  data<-enrich_GO_data  %>%  filter(larvae_part==paste0(larval_part)) %>% 
+    mutate(label=GO.ID)
+
+  #Checkpoint
+ # assign("data_test", data, envir = .GlobalEnv)
+  
+  #info = annotation for tree
+  info<- data %>% dplyr::select(label,Ontology,Term,GO.ID,weightFisher, Significant, larvae_part, figure_part) %>% mutate(GO_Term=paste(GO.ID, Term, sep=" ")) 
+  #Checkpoint
+ # assign("info_test", info, envir = .GlobalEnv)
+
+  #Plot tree without annotations
+  tree<-ggtree(nexus_tree)+ layout_rectangular()#+ggplot2::xlim(c(0,-6,-6),c(200,6,6)) #xlim determines achis of all 3 pannels
+  #Checkpoint
+ # assign("tree_test", tree, envir = .GlobalEnv)
+
+  #Add annotations to tree
+  tree_anno <- tree %<+% info+
+    geom_tippoint(aes(shape=Ontology),colour = "grey30")+  # Change tip point to ontology shape
+    geom_tiplab(aes(label=GO_Term),offset = 0.1, size=3)+ xlim_tree(4.5)+
+     scale_shape_discrete(name = "Gene ontology domains", labels = c("BP"="Biological Process", "CC"="Cellular Component", "MF"="Molecular Function"))
+    
+  #Checkpoint
+  #assign("tree_anno_test",  tree_anno, envir = .GlobalEnv)
+  
+  #Prepare data to align to annotated tree
+  data_induced<- data %>% filter(larvae_part==paste0(larval_part)) %>%
+    dplyr::select(label,logFC,weightFisher, Significant,Manual_annotation) %>%
+    mutate(Aboral_EL_logFC=logFC) %>% 
+    mutate(Count_aboral=Significant) 
+   #Checkpoint
+  #assign("data_aboral_test",  data_induced, envir = .GlobalEnv)
+  
+
+  data_combined<-data_induced %>% mutate(weightFisher_num=as.numeric(as.character(weightFisher))) 
+  #Checkpoint
+  #assign("data_combined_Fig2",  data_combined, envir = .GlobalEnv)
+  
+  
+   #Function to create achsis different for oral and aboral
+  #https://coolbutuseless.github.io/2019/03/07/custom-axis-breaks-on-facetted-ggplot/
+  breaks_fun <- function(x) {
+  if (max(x) > 0) {
+      seq(0, 5, 1)
+    } else {
+      seq(-5 , 0, 1)
+     }
+  }
+
+
+
+   #Function to create limits different for oral and aboral
+  limit_fun <- function(x) {
+  if (max(x) > 0) {
+      c(0, 5)
+    } else {
+       c((-5), 0)
+     }
+  }
+
+  
+  #Convert weightFisher to numeric
+  #data_combined$weightFisher<-as.numeric(as.character(data_combined$weightFisher))
+  
+    #Define colours for fill gradient for boxplots
+my_colours=c("#808080","#9A9A9A","#B5B5B5","#D0D0D0","#EDEDED","#FFFFFF")#greys
+
+
+#define limits for legend
+limits<-enrich_GO_data  %>% filter(larvae_part==paste0(larval_part))%>% filter(!is.na(Manual_annotation)) %>% pull(Manual_annotation) %>% unique()
+
+
+  #Align data to annotated tree manual annotations
+tree_data_m<-  facet_plot(tree_anno ,panel = "N", geom = geom_tile,
+  aes(x = 2.5, fill=Manual_annotation), width = 5, data = data_combined) +# , colour = "black"
+    scale_fill_manual(values=col_pal, 
+                      #limits=limits,
+                      name="Manual annotations",na.value="white")
+
+ # add number of genees in each GO term onto manual annotation column
+tree_data_mn<- facet_plot(tree_data_m,panel = "N", data = data_combined, geom = geom_text,
+            aes(x = 2.5, label = Count_aboral))
+
+
+#New scale for next columns
+tree_data_mns <- tree_data_mn + new_scale_fill()
+
+
+
+tree_data_mnsb<- tree_data_mns +
+
+
+
+  #boxplot
+              geom_facet(panel = "Effect size", data = data_combined, geom = ggstance::geom_boxploth,
+              aes(x = Aboral_EL_logFC, group = label,fill=weightFisher_num), width = .6)+
+              theme_tree2(legend.position="right")+
+            # scale_x_continuous(limits = c(0,5))+
+              scale_fill_gradientn(colours=my_colours,name="Significance\nGO enrichment")+
+  xlab("                                                                                                             log2 foldchange")+
+theme(legend.position="none")
+
+
+
+# 
+# 
+# #New scale for next columns
+# 
+# # tree_data_mnsbs <- tree_data_mnsb + new_scale_fill()
+# # 
+# # tree_data_mnsbsm<-  facet_plot(tree_data_mnsbs ,panel = "N ", geom = geom_tile,
+# #    aes(x = 1, fill=Manual_annotation_oral),width = 2.5,  data = data_combined) +# , colour = "black"
+# #      scale_fill_manual(values=col_pal,limits=limits_oral,
+# #                          name="Manual annotations oral",na.value="white")
+# # tree_data_mnsbsm
+# # 
+# # tree_data_mnsbsmn<- facet_plot(tree_data_mnsbsm,panel = "N ", data = data_combined, geom = geom_text,
+# #              aes(x = 1, label = Count_oral))
+ tree_data_mnsb<-facet_labeller(tree_data_mnsb, c(Tree = paste0("Enriched GO terms in ",tree_label)))
+
+
+
+# #change withs of columns see https://groups.google.com/g/bioc-ggtree/c/tZ0qkluBeGU/m/nkfWC9ixCwAJ
+gt = ggplot_gtable(ggplot_build(tree_data_mnsb))
+#assign("gt_check",  gt , envir = .GlobalEnv)
+#gt$layout$l[grep('panel-1-2', gt$layout$name)] # you want to find the column specific to panel-2
+
+gt$widths[7] = 0.09*gt$widths[7] # in this case it was colmun 7 - reduce the width by a half
+          # gt$widths[13] = 0.09*gt$widths[13] # in this case it was colmun 7 - reduce the width by a half
+gt$widths[9] = 0.4*gt$widths[9] # in this case it was colmun 7 - reduce the width by a half
+          # gt$widths[11] = 0.2*gt$widths[11] # in this case it was colmun 7 - reduce the width by a half
+# 
+
+#Make height of the plot depending on the number of enriched GO terms
+height<-length(nexus_tree$tip.label)*0.4
+#height
+
+#convert gtable into ggplot
+plot<-as.ggplot(gt)
+
+#Save in enrironment for futher patchwork
+assign(paste0(file_name),  plot, envir = .GlobalEnv)
+
+#save ggplot figure
+ggsave(paste0(saving_path,file_name,".png"), plot,
+       width = 18,
+       height = height,
+       units =  "cm")
+
+}
+```
+
+
+```{r}
+gt_check$layout$l[grep('panel-1-3', gt_check$layout$name)] # you want to find the column specific to panel-2
+```
+
+
+
+```{r}
+create_similarity_arranged_boxplot_fig1_separate(aboral_fig, 
+                                        larval_part = "Aboral",
+                                        nexus_tree=tree_aboral, 
+                                        saving_path="TopGO_Output/01_oral_vs_aboral/TopGO_figure/",      
+                                        file_name="Boxplot_Fig1_Aboral2",
+                                       tree_label="aboral",
+                                       plot_height=15
+                                      
+                                        )
+```
+
+```{r}
+create_similarity_arranged_boxplot_fig1_separate(oral_fig, 
+                                        larval_part = "Oral",
+                                        nexus_tree=tree_oral, 
+                                        saving_path="TopGO_Output/01_oral_vs_aboral/TopGO_figure/",      
+                                        file_name="Boxplot_Fig1_Oral",
+                                       tree_label="oral",
+                                       plot_height=15
+                                      
+                                        )
+```
+
+
+https://groups.google.com/g/bioc-ggtree/c/tZ0qkluBeGU/m/nkfWC9ixCwAJ
+to change widths
+
+
